@@ -17,8 +17,6 @@
 [常见问题](#常见问题) •
 [贡献 ↗](https://github.com/Louis047/LoneWM/blob/main/CONTRIBUTING.md)
 
-![Demo video][demo-video]
-
 </div>
 
 ---
@@ -341,5 +339,4 @@ Windows 的用户界面特权隔离 (UIPI) 阻止普通权限进程移动、调�
 [downloads-link]: https://github.com/Louis047/LoneWM/releases
 [license-badge]: https://img.shields.io/badge/license-GPL--3.0-blue
 [license-link]: https://github.com/Louis047/LoneWM/blob/main/LICENSE
-[demo-video]: resources/assets/demo.webp
 

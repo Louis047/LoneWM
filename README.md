@@ -17,8 +17,6 @@ A tiling window manager for Windows inspired by i3wm, bspwm, and Hyprland.
 [FAQ](#faq) •
 [Contributing ↗](https://github.com/Louis047/LoneWM/blob/main/CONTRIBUTING.md)
 
-![Demo video][demo-video]
-
 </div>
 
 ---
@@ -338,4 +336,3 @@ Use tools like AutoHotkey Window Spy or Winlister, or run `lonewm-cli query wind
 [downloads-link]: https://github.com/Louis047/LoneWM/releases
 [license-badge]: https://img.shields.io/badge/license-GPL--3.0-blue
 [license-link]: https://github.com/Louis047/LoneWM/blob/main/LICENSE
-[demo-video]: resources/assets/demo.webp
