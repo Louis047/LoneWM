@@ -4,7 +4,7 @@ use wm_platform::{
   RectDelta,
 };
 
-use crate::app_command::InvokeCommand;
+use crate::{app_command::InvokeCommand, fullscreen_mode::FullscreenMode};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -29,40 +29,39 @@ pub struct BindingModeConfig {
   #[serde(default)]
   pub display_name: Option<String>,
 
-  /// Keybindings that will be active when the binding mode is active.
-  #[serde(default)]
+  /// Keybindings active only when this mode is active.
   pub keybindings: Vec<KeybindingConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct GapsConfig {
-  /// Whether to scale the gaps with the DPI of the monitor.
-  pub scale_with_dpi: bool,
-
   /// Gap between adjacent windows.
   pub inner_gap: LengthValue,
 
-  /// Gap between windows and the screen edge.
+  /// Gap between windows and the monitor edge.
   pub outer_gap: RectDelta,
 
-  /// Gap between window and the screen edge if there is only one window
-  /// in the workspace
+  /// Gap between a single window and the monitor edge.
+  #[serde(default)]
   pub single_window_outer_gap: Option<RectDelta>,
+
+  /// Whether to scale the gaps with the DPI of the monitor.
+  pub scale_with_dpi: bool,
 }
 
 impl Default for GapsConfig {
   fn default() -> Self {
     GapsConfig {
-      scale_with_dpi: true,
-      inner_gap: LengthValue::from_px(0),
-      outer_gap: RectDelta::new(
-        LengthValue::from_px(0),
-        LengthValue::from_px(0),
-        LengthValue::from_px(0),
-        LengthValue::from_px(0),
-      ),
+      inner_gap: LengthValue::from_px(16),
+      outer_gap: RectDelta {
+        top: LengthValue::from_px(16),
+        right: LengthValue::from_px(16),
+        bottom: LengthValue::from_px(16),
+        left: LengthValue::from_px(16),
+      },
       single_window_outer_gap: None,
+      scale_with_dpi: true,
     }
   }
 }
@@ -102,27 +101,18 @@ impl Default for GeneralConfig {
   fn default() -> Self {
     GeneralConfig {
       cursor_jump: CursorJumpConfig::default(),
-      focus_follows_cursor: false,
-      toggle_workspace_on_refocus: true,
+      focus_follows_cursor: true,
+      toggle_workspace_on_refocus: false,
       startup_commands: vec![],
       shutdown_commands: vec![],
       config_reload_commands: vec![],
-      hide_method: {
-        #[cfg(target_os = "macos")]
-        {
-          HideMethod::PlaceInCorner
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-          HideMethod::Cloak
-        }
-      },
+      hide_method: HideMethod::Cloak,
       show_all_in_taskbar: false,
     }
   }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct CursorJumpConfig {
   /// Whether to automatically move the cursor on the specified trigger.
@@ -130,6 +120,15 @@ pub struct CursorJumpConfig {
 
   /// Trigger for cursor jump.
   pub trigger: CursorJumpTrigger,
+}
+
+impl Default for CursorJumpConfig {
+  fn default() -> Self {
+    CursorJumpConfig {
+      enabled: true,
+      trigger: CursorJumpTrigger::MonitorFocus,
+    }
+  }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -209,21 +208,44 @@ impl Default for FloatingStateConfig {
   }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct FullscreenStateConfig {
-  /// Whether to prefer fullscreen windows to be maximized.
+  /// Fullscreen mode: `Full` (Mode 0, covers entire screen) or `Monocle`
+  /// (Mode 1, fills workspace).
+  pub mode: FullscreenMode,
+
+  /// Deprecated legacy property: whether to prefer fullscreen windows to
+  /// be maximized.
+  #[serde(default)]
   pub maximized: bool,
 
   /// Whether to show fullscreen windows as always on top.
   pub shown_on_top: bool,
+
+  /// Whether monocle mode respects workspace outer gaps.
+  #[serde(default = "default_bool::<true>")]
+  pub respect_gaps: bool,
+}
+
+impl FullscreenStateConfig {
+  #[must_use]
+  pub fn effective_mode(&self) -> FullscreenMode {
+    if self.maximized {
+      FullscreenMode::Monocle
+    } else {
+      self.mode
+    }
+  }
 }
 
 impl Default for FullscreenStateConfig {
   fn default() -> Self {
     FullscreenStateConfig {
-      maximized: true,
+      mode: FullscreenMode::Full,
+      maximized: false,
       shown_on_top: false,
+      respect_gaps: true,
     }
   }
 }
@@ -449,26 +471,66 @@ where
 
 /// Helper function for deserializing [`HideMethod`].
 ///
-/// On macOS, [`HideMethod::Hide`] and [`HideMethod::Cloak`] are not valid
-/// and are automatically converted to [`HideMethod::PlaceInCorner`].
+/// Produces an error for invalid values.
 fn deserialize_hide_method<'de, D>(
   deserializer: D,
 ) -> Result<HideMethod, D::Error>
 where
   D: serde::de::Deserializer<'de>,
 {
-  // LINT: The deserialized value is ignored on macOS, but we still want
-  // to produce an error for invalid values.
-  #[allow(unused_variables)]
-  let method = HideMethod::deserialize(deserializer)?;
+  HideMethod::deserialize(deserializer)
+}
 
-  #[cfg(target_os = "macos")]
-  {
-    Ok(HideMethod::PlaceInCorner)
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_general_config_defaults() {
+    let general = GeneralConfig::default();
+    assert!(general.focus_follows_cursor);
+    assert!(!general.toggle_workspace_on_refocus);
+    assert_eq!(general.hide_method, HideMethod::Cloak);
+    assert!(!general.show_all_in_taskbar);
   }
 
-  #[cfg(not(target_os = "macos"))]
-  {
-    Ok(method)
+  #[test]
+  fn test_gaps_config_defaults() {
+    let gaps = GapsConfig::default();
+    assert_eq!(gaps.inner_gap, LengthValue::from_px(16));
+    assert_eq!(gaps.outer_gap.top, LengthValue::from_px(16));
+    assert_eq!(gaps.outer_gap.right, LengthValue::from_px(16));
+    assert_eq!(gaps.outer_gap.bottom, LengthValue::from_px(16));
+    assert_eq!(gaps.outer_gap.left, LengthValue::from_px(16));
+    assert!(gaps.scale_with_dpi);
+    assert!(gaps.single_window_outer_gap.is_none());
+  }
+
+  #[test]
+  fn test_fullscreen_state_config_effective_mode() {
+    let full = FullscreenStateConfig {
+      mode: FullscreenMode::Full,
+      maximized: false,
+      shown_on_top: false,
+      respect_gaps: true,
+    };
+    assert_eq!(full.effective_mode(), FullscreenMode::Full);
+
+    let monocle = FullscreenStateConfig {
+      mode: FullscreenMode::Monocle,
+      maximized: false,
+      shown_on_top: false,
+      respect_gaps: true,
+    };
+    assert_eq!(monocle.effective_mode(), FullscreenMode::Monocle);
+
+    // Legacy maximized compatibility
+    let legacy_maximized = FullscreenStateConfig {
+      mode: FullscreenMode::Full,
+      maximized: true,
+      shown_on_top: false,
+      respect_gaps: true,
+    };
+    assert_eq!(legacy_maximized.effective_mode(), FullscreenMode::Monocle);
   }
 }
