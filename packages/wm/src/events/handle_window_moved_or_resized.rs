@@ -3,11 +3,7 @@ use wm_common::{
   try_warn, ActiveDrag, ActiveDragOperation, DisplayState,
   FloatingStateConfig, FullscreenStateConfig, HideMethod, WindowState,
 };
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
-#[cfg(target_os = "macos")]
-use wm_platform::{LengthValue, MouseButton, RectDelta};
-use wm_platform::{NativeWindow, Rect};
+use wm_platform::{NativeWindow, NativeWindowWindowsExt, Rect};
 
 use crate::{
   commands::{
@@ -24,11 +20,7 @@ use crate::{
 #[allow(clippy::too_many_lines)]
 pub fn handle_window_moved_or_resized(
   native_window: &NativeWindow,
-  // LINT: `is_interactive_start` is only used on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   is_interactive_start: bool,
-  // LINT: `is_interactive_end` is only used on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   is_interactive_end: bool,
   state: &mut WmState,
   config: &UserConfig,
@@ -45,28 +37,9 @@ pub fn handle_window_moved_or_resized(
 
     // Handle windows that are actively being dragged.
     if !state.is_paused && window.active_drag().is_some() {
-      let is_drag_end = {
-        // On Windows, the drag operation has ended when
-        // `is_interactive_end` is `true`. This corresponds to a
-        // `EVENT_SYSTEM_MOVESIZEEND` event, which is unavailable on macOS.
-        #[cfg(target_os = "windows")]
-        {
-          is_interactive_end
-        }
-        // On macOS, the drag operation has ended when the mouse button is
-        // no longer down. This is a fallback mechanism since for macOS,
-        // `is_interactive_end` is always `false`. The `MouseEvent` handler
-        // also catches `MouseButtonUp` events, but this provides
-        // additional safety.
-        // TODO: Can probably remove this check and rely 100% on the mouse
-        // event handler.
-        #[cfg(target_os = "macos")]
-        {
-          !state.dispatcher.is_mouse_down(&MouseButton::Left)
-        }
-      };
-
-      if is_drag_end {
+      // The drag operation has ended when `is_interactive_end` is `true`.
+      // This corresponds to a `EVENT_SYSTEM_MOVESIZEEND` event.
+      if is_interactive_end {
         return handle_window_moved_or_resized_end(&window, state, config);
       }
 
@@ -93,7 +66,6 @@ pub fn handle_window_moved_or_resized(
     // If the window is not maximized, update its cached shadow borders.
     // Maximized windows temporarily have 0 shadow borders, in which case
     // we should use its previous value for redraws.
-    #[cfg(target_os = "windows")]
     {
       let shadow_borders = try_warn!(window.native().shadow_borders());
       if !is_maximized {
@@ -113,62 +85,20 @@ pub fn handle_window_moved_or_resized(
 
     // Detect whether the window is starting to be interactively moved or
     // resized by the user (e.g. via the window's drag handles).
-    let is_drag_start = !state.is_paused && {
-      #[cfg(target_os = "windows")]
-      {
-        // Drag events can be valid for all window states apart from
-        // minimized.
-        is_interactive_start
-          && !matches!(window.state(), WindowState::Minimized)
-      }
-      #[cfg(target_os = "macos")]
-      {
-        // Drag events are never valid for minimized or maximized windows.
-        let is_valid_state = !matches!(
-          window.state(),
-          WindowState::Fullscreen(FullscreenStateConfig {
-            maximized: true,
-            ..
-          }) | WindowState::Minimized
-        );
+    //
+    let is_mouse_down = state
+      .dispatcher
+      .is_mouse_down(&wm_platform::MouseButton::Left);
 
-        let is_dragging_other_window =
-          state.windows().iter().any(|w| w.active_drag().is_some());
-
-        let is_left_click =
-          state.dispatcher.is_mouse_down(&MouseButton::Left);
-
-        // Only consider the window to be dragging if:
-        //  1. The window is not minimized or maximized.
-        //  2. No other window is being dragged.
-        //  3. Left-click is down.
-        //  4. The cursor is within 40px margin around the window's frame.
-        if is_valid_state && !is_dragging_other_window && is_left_click {
-          // The window frame can lag behind the cursor when moving or
-          // resizing quickly, so allow for a bit of leeway.
-          let frame_to_check = frame_position.apply_delta(
-            &RectDelta::new(
-              LengthValue::from_px(40),
-              LengthValue::from_px(40),
-              LengthValue::from_px(40),
-              LengthValue::from_px(40),
-            ),
-            None,
-          );
-
-          // TODO: Might be more robust to also check if the window under
-          // the cursor (i.e. via `dispatcher.window_from_point`) is not a
-          // different window.
-          let cursor_position = state.dispatcher.cursor_position()?;
-          frame_to_check.contains_point(&cursor_position)
-        } else {
-          false
-        }
-      }
-    };
+    let is_drag_start = !state.is_paused
+      && is_interactive_start
+      && is_mouse_down
+      && !matches!(window.state(), WindowState::Minimized);
 
     if is_drag_start {
       tracing::info!("Window started dragging: {window}");
+
+      state.wm_set_frames.remove(&window.id());
 
       window.set_active_drag(Some(ActiveDrag {
         operation: None,
@@ -176,19 +106,9 @@ pub fn handle_window_moved_or_resized(
           window.state(),
           WindowState::Floating(_)
         ),
-        #[cfg(target_os = "windows")]
         initial_position: old_frame_position.clone(),
-        // The updated frame position is used here instead of the initial
-        // frame position due to a quirk on macOS. When we resize an
-        // AXUIElement to a value outside the allowed min/max width &
-        // height, macOS doesn't actually apply that size. However, it
-        // still reports the value we attempted to set until a subsequent
-        // `WindowEvent::MovedOrResized` event.
-        #[cfg(target_os = "macos")]
-        initial_position: frame_position.clone(),
       }));
 
-      #[cfg(target_os = "windows")]
       update_drag_state(&window, &frame_position, state, config)?;
 
       return Ok(());
@@ -225,6 +145,24 @@ pub fn handle_window_moved_or_resized(
       }
     }
 
+    // Ignore echo events for rects that were set by the WM itself.
+    // When the window frame matches what the WM commanded, no state
+    // transition or restoration should take place.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/1418>
+    let is_wm_echo = state.wm_set_frames.get(&window.id()).is_some_and(
+      |(set_rect, _)| rects_approx_equal(&frame_position, set_rect),
+    );
+
+    if is_wm_echo {
+      return Ok(());
+    }
+
+    // If the window moved to a frame different from what the WM set (e.g.
+    // user drag or app-initiated move), invalidate `wm_set_frames` so
+    // subsequent redraws snap the window back to its assigned slot.
+    state.wm_set_frames.remove(&window.id());
+
     let should_fullscreen = {
       let workspace = nearest_monitor
         .displayed_workspace()
@@ -252,9 +190,10 @@ pub fn handle_window_moved_or_resized(
             new_frame.inset(1).contains_rect(&workspace_rect);
 
           // The window should no longer be fullscreen if the old frame
-          // exceeded the workspace bounds (app was in OS fullscreen), but
-          // the new frame no longer does. Configs with 0px outer gaps
-          // always use the `should_fullscreen` check, since the old frame
+          // exceeded the workspace bounds (app was in OS fullscreen),
+          // but the new frame no longer does. Configs with
+          // 0px outer gaps always use the
+          // `should_fullscreen` check, since the old frame
           // will never exceed the workspace bounds.
           if old_exceeded && !new_exceeds {
             false
@@ -268,64 +207,75 @@ pub fn handle_window_moved_or_resized(
 
     // Handle a window being maximized or entering fullscreen.
     if is_maximized || should_fullscreen {
-      let is_same_state = is_maximized
-        && matches!(
-          window.state(),
-          WindowState::Fullscreen(FullscreenStateConfig {
-            maximized: true,
-            ..
-          })
-        )
-        || should_fullscreen
+      // Apps can restore their saved window placement (e.g. maximized)
+      // shortly after their window is opened. Treat that as a launch
+      // placement rather than a user-initiated maximize, so the pending
+      // redraw restores the window into its tiling slot instead of
+      // keeping it maximized.
+      //
+      // See: <https://github.com/glzr-io/glazewm/issues/1365>
+      let is_launch_maximize = is_maximized
+        && !should_fullscreen
+        && state
+          .managed_timestamps
+          .get(&window.id())
+          .is_some_and(|time| time.elapsed().as_millis() < 1000);
+
+      if !is_launch_maximize {
+        let is_same_state = is_maximized
           && matches!(
             window.state(),
             WindowState::Fullscreen(FullscreenStateConfig {
-              maximized: false,
+              maximized: true,
               ..
             })
-          );
+          )
+          || should_fullscreen
+            && matches!(
+              window.state(),
+              WindowState::Fullscreen(FullscreenStateConfig {
+                maximized: false,
+                ..
+              })
+            );
 
-      // Ignore if there's no state change.
-      if is_same_state {
+        // Ignore if there's no state change.
+        if is_same_state {
+          return Ok(());
+        }
+
+        let fullscreen_state = if let WindowState::Fullscreen(
+          fullscreen_state,
+        ) = window.state()
+        {
+          fullscreen_state
+        } else {
+          config.value.window_behavior.state_defaults.fullscreen
+        };
+
+        let window = update_window_state(
+          window.clone(),
+          WindowState::Fullscreen(FullscreenStateConfig {
+            maximized: is_maximized,
+            ..fullscreen_state
+          }),
+          state,
+          config,
+        )?;
+
+        if is_maximized {
+          // Dequeue the window from redraw if it's maximized, since the
+          // window is already in the correct state.
+          state
+            .pending_sync
+            .dequeue_container_from_redraw(window.clone());
+        }
+
+        // TODO: Handle a fullscreen window being moved from one monitor to
+        // another.
+
         return Ok(());
       }
-
-      let fullscreen_state = if let WindowState::Fullscreen(
-        fullscreen_state,
-      ) = window.state()
-      {
-        fullscreen_state
-      } else {
-        config
-          .value
-          .window_behavior
-          .state_defaults
-          .fullscreen
-          .clone()
-      };
-
-      let window = update_window_state(
-        window.clone(),
-        WindowState::Fullscreen(FullscreenStateConfig {
-          maximized: is_maximized,
-          ..fullscreen_state
-        }),
-        state,
-        config,
-      )?;
-
-      if is_maximized {
-        // Dequeue the window from redraw if it's maximized, since the
-        // window is already in the correct state.
-        state
-          .pending_sync
-          .dequeue_container_from_redraw(window.clone());
-      }
-
-      // TODO: Handle a fullscreen window being moved from one monitor to
-      // another.
-
-      return Ok(());
     }
 
     match window.state() {
@@ -379,6 +329,10 @@ pub fn update_floating_window_position(
   // Update the window's workspace if it goes out of bounds of its
   // current workspace.
   if monitor.id() != nearest_monitor.id() {
+    // Since the window is moving to a different monitor, adjustments
+    // might need to be made because of DPI.
+    window.set_has_pending_dpi_adjustment(true);
+
     let updated_workspace = nearest_monitor
       .displayed_workspace()
       .context("Failed to get workspace of nearest monitor.")?;
@@ -443,10 +397,10 @@ fn update_drag_state(
   };
 
   // Transition window to be floating while it's being dragged, but only
-  // after it has been moved at least 10px from its initial position. The
-  // 10px threshold is to account for small movements that may be
-  // accidental.
-  if is_move && !matches!(window.state(), WindowState::Floating(_)) {
+  // for maximized/fullscreen windows being restored during drag.
+  // Tiled windows remain tiled to prevent layout churn and flicker
+  // on custom titlebar / WinUI 3 apps (e.g. WhatsApp).
+  if is_move && matches!(window.state(), WindowState::Fullscreen(_)) {
     let move_distance = frame_position
       .center_point()
       .distance_between(&active_drag.initial_position.center_point());
@@ -462,7 +416,7 @@ fn update_drag_state(
       })
     );
 
-    if move_distance >= 10.0 || is_maximized {
+    if move_distance >= 30.0 || is_maximized {
       let parent = window.parent().context("No parent")?;
 
       let is_fullscreen =
@@ -512,6 +466,18 @@ fn update_drag_state(
   Ok(())
 }
 
+/// Gets whether two rects are approximately equal, allowing for a small
+/// tolerance in each edge (the OS can be off by a few px when applying a
+/// position).
+pub(crate) fn rects_approx_equal(a: &Rect, b: &Rect) -> bool {
+  const TOLERANCE: i32 = 2;
+
+  (a.left - b.left).abs() <= TOLERANCE
+    && (a.top - b.top).abs() <= TOLERANCE
+    && (a.right - b.right).abs() <= TOLERANCE
+    && (a.bottom - b.bottom).abs() <= TOLERANCE
+}
+
 /// Gets whether the window is in the corner of the monitor.
 fn is_in_corner(window_frame: &Rect, monitor_rect: &Rect) -> bool {
   // Visible portion of the window used when positioning windows in the
@@ -528,10 +494,6 @@ fn is_in_corner(window_frame: &Rect, monitor_rect: &Rect) -> bool {
   let is_right_corner =
     (window_frame.x() + VISIBLE_SLIVER_PX - monitor_rect.right).abs() <= 1;
 
-  // On macOS, the window's title bar is prevented from being positioned
-  // outside of monitor's working area, so we need to allow ~55px of
-  // vertical leeway. Title bar height varies, but can be up to 52px.
-  // TODO: See if possible to make this dynamic based on the window's title
   // bar height.
   let is_bottom_of_monitor =
     (window_frame.y() - monitor_rect.bottom).abs() <= 55;

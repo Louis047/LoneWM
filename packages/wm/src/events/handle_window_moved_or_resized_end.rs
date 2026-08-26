@@ -1,34 +1,23 @@
 use anyhow::Context;
 use wm_common::{
-  try_warn, FullscreenStateConfig, TilingDirection, WindowState,
+  try_warn, ActiveDragOperation, FullscreenStateConfig, WindowState,
 };
-use wm_platform::{LengthValue, Point, Rect};
+use wm_platform::LengthValue;
 
 use crate::{
   commands::{
-    container::{move_container_within_tree, wrap_in_split_container},
+    container::{move_container_within_tree, set_focused_descendant},
     window::{set_window_size, update_window_state},
   },
   events::update_floating_window_position,
-  models::{
-    DirectionContainer, NonTilingWindow, SplitContainer, TilingContainer,
-    WindowContainer,
-  },
-  traits::{
-    CommonGetters, PositionGetters, TilingDirectionGetters, WindowGetters,
-  },
+  models::{NonTilingWindow, WindowContainer},
+  traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
 
 /// Handles the event for when a window is finished being moved or resized
-/// by the user (e.g. via the window's drag handles).
-///
-/// This resizes the window if it's a tiling window and attach a dragged
-/// floating window.
-///
-/// TODO: Move this to a better location - maybe a new `active_drag_ext`
-/// mod.
+/// by the user (e.g. via the window's drag handles or titlebar).
 pub fn handle_window_moved_or_resized_end(
   window: &WindowContainer,
   state: &mut WmState,
@@ -63,12 +52,7 @@ pub fn handle_window_moved_or_resized_end(
         {
           fullscreen_state
         } else {
-          config
-            .value
-            .window_behavior
-            .state_defaults
-            .fullscreen
-            .clone()
+          config.value.window_behavior.state_defaults.fullscreen
         };
 
         let window = update_window_state(
@@ -91,7 +75,6 @@ pub fn handle_window_moved_or_resized_end(
             .dequeue_container_from_redraw(window.clone());
         } else {
           // Force a redraw to snap the window to the monitor edges.
-          // TODO: Skip redraw if it's already matches fullscreen frame.
           state.pending_sync.queue_container_to_redraw(window.clone());
         }
 
@@ -108,7 +91,7 @@ pub fn handle_window_moved_or_resized_end(
         window.set_active_drag(None);
       } else {
         // Window is a temporary floating window that should be
-        // reverted back to tiling.
+        // reverted back to tiling in the dwindle layout.
         let window = drop_as_tiling_window(window, state, config)?;
         window.set_active_drag(None);
       }
@@ -121,24 +104,22 @@ pub fn handle_window_moved_or_resized_end(
 
       let frame = window.native_properties().frame;
 
-      // Update the window's size based on the new frame position. This
-      // means we use the actual window dimensions as the source of truth.
-      set_window_size(
-        window.clone().into(),
-        Some(LengthValue::from_px(frame.width())),
-        Some(LengthValue::from_px(frame.height())),
-        state,
-      )?;
+      // Update the window's size based on the new frame position on
+      // resize.
+      if active_drag.operation == Some(ActiveDragOperation::Resize) {
+        set_window_size(
+          window.clone().into(),
+          Some(LengthValue::from_px(frame.width())),
+          Some(LengthValue::from_px(frame.height())),
+          state,
+        )?;
+      }
 
       window.set_active_drag(None);
+      state.wm_set_frames.remove(&window.id());
 
       // Force a redraw of the window to snap it back to its original
-      // position. This is necessary when:
-      // - The window is the only tiling window in the workspace.
-      // - The window is not past the movement threshold for transitioning
-      //   to floating while being dragged.
-      // - Resizing in a direction that doesn't change the window's tiling
-      //   size.
+      // position.
       state.pending_sync.queue_container_to_redraw(window.clone());
     }
   }
@@ -147,8 +128,7 @@ pub fn handle_window_moved_or_resized_end(
 }
 
 /// Handles transition from temporary floating window to tiling window on
-/// drag end.
-#[allow(clippy::too_many_lines)]
+/// drag end in a pure Dwindle architecture.
 fn drop_as_tiling_window(
   moved_window: &NonTilingWindow,
   state: &mut WmState,
@@ -159,6 +139,8 @@ fn drop_as_tiling_window(
     moved_window.as_window_container()?
   );
 
+  state.wm_set_frames.remove(&moved_window.id());
+
   let mouse_pos = state.dispatcher.cursor_position()?;
   let mouse_workspace = state
     .monitor_at_point(&mouse_pos)
@@ -166,63 +148,65 @@ fn drop_as_tiling_window(
     .or_else(|| moved_window.workspace())
     .context("Couldn't find workspace for window drop.")?;
 
-  // Get the workspace, split containers, and other windows under the
-  // dragged window.
-  let containers_at_pos = state
-    .containers_at_point(&mouse_workspace.clone().into(), &mouse_pos)
-    .into_iter()
-    .filter(|container| container.id() != moved_window.id());
+  let current_workspace = moved_window
+    .workspace()
+    .context("Window has no workspace.")?;
 
-  // Get the deepest direction container under the dragged window.
-  let target_parent: DirectionContainer = containers_at_pos
-    .filter_map(|container| container.as_direction_container().ok())
-    .fold(mouse_workspace.into(), |acc, container| {
-      if container.ancestors().count() > acc.ancestors().count() {
-        container
-      } else {
-        acc
-      }
-    });
+  // 1. If dragged across workspaces/monitors, transfer the floating window
+  //    first.
+  if mouse_workspace.id() != current_workspace.id() {
+    let current_monitor =
+      current_workspace.monitor().context("No monitor.")?;
+    let target_monitor =
+      mouse_workspace.monitor().context("No monitor.")?;
 
-  // If the target parent has no children (i.e. an empty workspace), then
-  // add the window directly.
-  if target_parent.tiling_children().count() == 0 {
-    move_container_within_tree(
-      &moved_window.clone().into(),
-      &target_parent.clone().into(),
-      0,
-      state,
-    )?;
+    if current_monitor
+      .has_dpi_difference(&target_monitor.clone().into())?
+    {
+      moved_window.set_has_pending_dpi_adjustment(true);
+    }
 
     moved_window.set_insertion_target(None);
 
-    return update_window_state(
-      moved_window.as_window_container()?,
-      WindowState::Tiling,
+    move_container_within_tree(
+      &moved_window.clone().into(),
+      &mouse_workspace.clone().into(),
+      mouse_workspace.child_count(),
       state,
-      config,
-    );
+    )?;
   }
 
-  let nearest_container = target_parent
-    .children()
-    .into_iter()
-    .filter_map(|container| container.as_tiling_container().ok())
-    .try_fold(None, |acc: Option<TilingContainer>, container| match acc {
-      Some(acc) => {
-        let is_nearer = acc.to_rect()?.distance_to_point(&mouse_pos)
-          < container.to_rect()?.distance_to_point(&mouse_pos);
+  // 2. Find target tiling sibling on the target workspace under or nearest
+  //    to cursor.
+  let tiling_siblings = mouse_workspace
+    .descendants()
+    .filter_map(|c| c.as_tiling_window().cloned())
+    .filter(|w| w.id() != moved_window.id())
+    .collect::<Vec<_>>();
 
-        anyhow::Ok(Some(if is_nearer { acc } else { container }))
-      }
-      None => Ok(Some(container)),
-    })?
-    .context("No nearest container.")?;
+  if let Some(target_sibling) = tiling_siblings
+    .iter()
+    .find(|w| w.to_rect().is_ok_and(|r| r.contains_point(&mouse_pos)))
+    .or_else(|| {
+      tiling_siblings.iter().min_by(|a, b| {
+        let dist_a = a
+          .to_rect()
+          .map_or(f32::MAX, |r| r.distance_to_point(&mouse_pos));
+        let dist_b = b
+          .to_rect()
+          .map_or(f32::MAX, |r| r.distance_to_point(&mouse_pos));
+        dist_a.total_cmp(&dist_b)
+      })
+    })
+  {
+    // Set target sibling as the focused descendant so
+    // dwindle_insertion_target automatically selects it for spiral
+    // split placement.
+    set_focused_descendant(&target_sibling.clone().into(), None);
+    moved_window.set_insertion_target(None);
+  }
 
-  let tiling_direction = target_parent.tiling_direction();
-  let drop_position =
-    drop_position(&mouse_pos, &nearest_container.to_rect()?);
-
+  // 3. Re-tile the window cleanly via update_window_state.
   let moved_window = update_window_state(
     moved_window.clone().into(),
     WindowState::Tiling,
@@ -230,90 +214,11 @@ fn drop_as_tiling_window(
     config,
   )?;
 
-  let should_split = nearest_container.is_tiling_window()
-    && match tiling_direction {
-      TilingDirection::Horizontal => {
-        drop_position == DropPosition::Top
-          || drop_position == DropPosition::Bottom
-      }
-      TilingDirection::Vertical => {
-        drop_position == DropPosition::Left
-          || drop_position == DropPosition::Right
-      }
-    };
-
-  if should_split {
-    let split_container = SplitContainer::new(
-      tiling_direction.inverse(),
-      config.value.gaps.clone(),
-    );
-
-    wrap_in_split_container(
-      &split_container,
-      &target_parent.clone().into(),
-      &[nearest_container],
-    )?;
-
-    let target_index = match drop_position {
-      DropPosition::Top | DropPosition::Left => 0,
-      _ => 1,
-    };
-
-    move_container_within_tree(
-      &moved_window.clone().into(),
-      &split_container.into(),
-      target_index,
-      state,
-    )?;
-  } else {
-    let target_index = match drop_position {
-      DropPosition::Top | DropPosition::Left => nearest_container.index(),
-      _ => nearest_container.index() + 1,
-    };
-
-    move_container_within_tree(
-      &moved_window.clone().into(),
-      &target_parent.clone().into(),
-      target_index,
-      state,
-    )?;
-  }
-
-  state.pending_sync.queue_container_to_redraw(target_parent);
+  state
+    .pending_sync
+    .queue_containers_to_redraw(mouse_workspace.tiling_children())
+    .queue_focus_change()
+    .queue_workspace_to_reorder(mouse_workspace);
 
   Ok(moved_window)
-}
-
-/// Represents where the window was dropped over another.
-#[derive(Debug, Clone, PartialEq)]
-enum DropPosition {
-  Top,
-  Bottom,
-  Left,
-  Right,
-}
-
-/// Gets the drop position for a window based on the mouse position.
-///
-/// This approach divides the window rect into an "X", creating four
-/// triangular quadrants, to determine which side the cursor is closest to.
-fn drop_position(mouse_pos: &Point, rect: &Rect) -> DropPosition {
-  let delta_x = mouse_pos.x - rect.center_point().x;
-  let delta_y = mouse_pos.y - rect.center_point().y;
-
-  if delta_x.abs() > delta_y.abs() {
-    // Window is in the left or right triangle.
-    if delta_x > 0 {
-      DropPosition::Right
-    } else {
-      DropPosition::Left
-    }
-  } else {
-    // Window is in the top or bottom triangle.
-    if delta_y > 0 {
-      DropPosition::Bottom
-    } else {
-      DropPosition::Top
-    }
-  }
 }

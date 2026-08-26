@@ -1,21 +1,21 @@
+use std::{sync::atomic::Ordering, time::Duration};
+
 use anyhow::Context;
-#[cfg(target_os = "windows")]
-use wm_common::WindowEffectConfig;
 use wm_common::{
-  CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
-  WindowState, WmEvent,
+  CursorJumpTrigger, DisplayState, FullscreenMode, HideCorner, HideMethod,
+  UniqueExt, WindowEffectConfig, WindowState, WmEvent,
 };
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
-#[cfg(target_os = "windows")]
-use wm_platform::{CornerStyle, OpacityValue};
-use wm_platform::{Rect, WindowZOrder};
+use wm_platform::{
+  CornerStyle, MouseButton, NativeWindowWindowsExt, OpacityValue, Rect,
+  WindowZOrder,
+};
 
 use crate::{
+  events::rects_approx_equal,
   models::{Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
-  wm_state::WmState,
+  wm_state::{BorderStamp, WmState},
 };
 
 pub fn platform_sync(
@@ -49,7 +49,7 @@ pub fn platform_sync(
     let prev_effects_window = state.prev_effects_window.clone();
 
     if let Ok(window) = focused_container.as_window_container() {
-      apply_window_effects(&window, true, config);
+      apply_window_effects(&window, true, config, state);
       state.prev_effects_window = Some(window.clone());
     } else {
       state.prev_effects_window = None;
@@ -69,7 +69,7 @@ pub fn platform_sync(
       .filter(|window| window.id() != focused_container.id());
 
     for window in unfocused_windows {
-      apply_window_effects(&window, false, config);
+      apply_window_effects(&window, false, config, state);
     }
   }
 
@@ -191,14 +191,21 @@ fn redraw_containers(
       .descendant_focus_order()
       .collect::<Vec<_>>();
 
-    // Sort the windows to update by their focus order. The most recently
-    // focused window will be updated first.
-    // TODO: To reduce flicker, redraw windows that will be shown first,
-    // then redraw the ones to be hidden last.
+    // Sort the windows to update: windows to be shown are processed first,
+    // and windows to be hidden last, with focus order preserved within
+    // each group. This prevents the desktop wallpaper from flashing
+    // during workspace switches.
     windows.sort_by_key(|window| {
-      descendant_focus_order
+      let is_displayed =
+        window.workspace().is_some_and(|ws| ws.is_displayed());
+
+      let focus_pos = descendant_focus_order
         .iter()
         .position(|order| order.id() == window.id())
+        .unwrap_or(usize::MAX);
+
+      // Shown windows first (is_displayed = true -> 0), hidden last (1).
+      (usize::from(!is_displayed), focus_pos)
     });
 
     windows
@@ -249,9 +256,6 @@ fn redraw_containers(
 
     // Set the z-order of the window.
     //
-    // NOTE: macOS doesn't have a robust public API for setting the z-order
-    // of a window. See `NativeWindow::raise` for more details.
-    #[cfg(target_os = "windows")]
     if should_bring_to_front && !windows_to_redraw.contains(window) {
       tracing::info!("Updating window z-order: {window}");
 
@@ -285,45 +289,82 @@ fn redraw_containers(
       DisplayState::Showing | DisplayState::Shown
     );
 
-    if let Err(err) =
-      reposition_window(window, *hide_corner, &z_order, is_visible, config)
+    // Record the rect that the WM is about to set, so that the resulting
+    // echo `MovedOrResized` event can be identified and not misclassified
+    // by the fullscreen heuristic.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/1418>
+    let mut is_rect_unchanged = false;
+
+    if let (Ok(rect), Ok(border_delta)) =
+      (window.to_rect(), window.total_border_delta())
     {
+      let rect = rect.apply_delta(&border_delta, None);
+
+      // Skip no-op repositioning: re-applying the same rect forces a
+      // frame repaint in some apps (e.g. JetBrains IDEs), which
+      // flickers.
+      //
+      // See: <https://github.com/glzr-io/glazewm/issues/1401>
+      is_rect_unchanged = state
+        .wm_set_frames
+        .get(&window.id())
+        .is_some_and(|(set_rect, _)| rects_approx_equal(set_rect, &rect));
+
+      state
+        .wm_set_frames
+        .insert(window.id(), (rect, std::time::Instant::now()));
+    }
+
+    if let Err(err) = reposition_window(
+      window,
+      *hide_corner,
+      &z_order,
+      is_visible,
+      is_rect_unchanged,
+      config,
+    ) {
       tracing::warn!("Failed to set window position: {}", err);
     }
 
-    // Whether the window is either transitioning to or from fullscreen.
-    // TODO: This check can be improved since `prev_state` can be
-    // fullscreen without it needing to be marked as not fullscreen.
-    #[cfg(target_os = "windows")]
+    // Mark fullscreen windows with the OS so that the taskbar gets out of
+    // the way. This is done idempotently on every redraw (rather than
+    // only on transitions), so that windows that start as fullscreen —
+    // e.g. an app fullscreened before the WM started, or an app toggling
+    // fullscreen via F11 — are always marked.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/682>
+    // See: <https://github.com/glzr-io/glazewm/issues/833>
     {
-      let is_transitioning_fullscreen =
-        match (window.prev_state(), window.state()) {
-          (Some(_), WindowState::Fullscreen(s)) if !s.maximized => true,
-          (Some(WindowState::Fullscreen(_)), _) => true,
-          _ => false,
-        };
+      let is_fullscreen = matches!(
+        window.state(),
+        WindowState::Fullscreen(s) if s.effective_mode() == FullscreenMode::Full
+      );
 
-      if is_transitioning_fullscreen {
-        if let Err(err) = window.native().mark_fullscreen(matches!(
-          window.state(),
-          WindowState::Fullscreen(_)
-        )) {
+      let was_fullscreen = matches!(
+        window.prev_state(),
+        Some(WindowState::Fullscreen(s)) if s.effective_mode() == FullscreenMode::Full
+      );
+
+      if is_fullscreen || was_fullscreen {
+        if let Err(err) = window.native().mark_fullscreen(is_fullscreen) {
           tracing::warn!("Failed to mark window as fullscreen: {}", err);
         }
       }
     }
 
-    // Skip setting taskbar visibility if the window is hidden (has no
-    // effect). Since cloaked windows are normally always visible in the
-    // taskbar, we only need to set visibility if `show_all_in_taskbar` is
-    // `false`.
-    #[cfg(target_os = "windows")]
+    // Since cloaked windows are normally always visible in the taskbar, we
+    // need to set visibility if `show_all_in_taskbar` is `false`.
+    //
+    // Visibility is asserted on every redraw (not just when transitioning
+    // between shown/hidden) because `AddTab`/`DeleteTab` are advisory
+    // calls that the Windows shell can silently revert (e.g. when a
+    // window's title or icon changes). Re-asserting in steady states
+    // keeps the taskbar converged to the WM's state.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/1394>
     if config.value.general.hide_method == HideMethod::Cloak
       && !config.value.general.show_all_in_taskbar
-      && matches!(
-        window.display_state(),
-        DisplayState::Showing | DisplayState::Hiding
-      )
     {
       if let Err(err) = window.native().set_taskbar_visibility(is_visible)
       {
@@ -338,10 +379,9 @@ fn redraw_containers(
 fn reposition_window(
   window: &WindowContainer,
   hide_corner: HideCorner,
-  // LINT: `z_order` is only used on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   z_order: &WindowZOrder,
   is_visible: bool,
+  is_rect_unchanged: bool,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   let rect = window
@@ -373,7 +413,7 @@ fn reposition_window(
 
     // Even though the window size is unchanged, `NativeWindow::set_frame`
     // is used instead of `NativeWindow::reposition` because the latter
-    // resulted in occasional incorrect positionings on macOS.
+    // can result in occasional incorrect positionings.
     window.native().set_frame(&Rect::from_xy(
       position_x,
       position_y,
@@ -387,88 +427,136 @@ fn reposition_window(
   if window.active_drag().is_some() {
     window.native().resize(rect.width(), rect.height())?;
   } else {
-    #[cfg(target_os = "macos")]
-    window.native().set_frame(&rect)?;
+    use wm_platform::{
+      SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSENDCHANGING,
+      WS_MAXIMIZEBOX,
+    };
 
-    #[cfg(target_os = "windows")]
-    {
-      use wm_platform::{
-        SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOCOPYBITS, SWP_NOSENDCHANGING, WS_MAXIMIZEBOX,
-      };
-
-      // Restore window if it's minimized/maximized and shouldn't be. This
-      // is needed to be able to move and resize it.
-      let should_restore = match &window.state() {
-        // Need to restore window if transitioning from maximized
-        // fullscreen to non-maximized fullscreen.
-        WindowState::Fullscreen(fullscreen) => {
-          !fullscreen.maximized && window.native().is_maximized()?
-        }
-        // No need to restore window if it'll be minimized. Transitioning
-        // from maximized to minimized works without having to
-        // restore.
-        WindowState::Minimized => false,
-        _ => {
-          window.native().is_minimized()?
-            || window.native().is_maximized()?
-        }
-      };
-
-      if should_restore {
-        // Restoring to position has the same effect as `ShowWindow` with
-        // `SW_RESTORE`, but doesn't cause a flicker.
-        window.native().restore(Some(&rect))?;
+    // Restore window if it's minimized/maximized and shouldn't be. This
+    // is needed to be able to move and resize it.
+    let should_restore = match &window.state() {
+      // Need to restore window if transitioning from maximized/fullscreen
+      // to windowed/tiled.
+      WindowState::Fullscreen(fullscreen) => {
+        fullscreen.effective_mode() == FullscreenMode::Full
+          && window.native().is_maximized()?
       }
+      // No need to restore window if it'll be minimized. Transitioning
+      // from maximized to minimized works without having to
+      // restore.
+      WindowState::Minimized => false,
+      _ => {
+        window.native().is_minimized()?
+          || window.native().is_maximized()?
+      }
+    };
 
-      let mut swp_flags = SWP_NOACTIVATE
-        | SWP_NOCOPYBITS
-        | SWP_NOSENDCHANGING
-        | SWP_ASYNCWINDOWPOS;
+    if should_restore {
+      // Restoring to position has the same effect as `ShowWindow` with
+      // `SW_RESTORE`, but doesn't cause a flicker.
+      window.native().restore(Some(&rect))?;
+    }
 
-      match &window.state() {
-        WindowState::Minimized => {
-          if !window.native().is_minimized()? {
-            window.native().minimize()?;
-          }
+    let swp_flags =
+      SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_ASYNCWINDOWPOS;
+
+    match &window.state() {
+      WindowState::Minimized => {
+        if !window.native().is_minimized()? {
+          window.native().minimize()?;
         }
-        WindowState::Fullscreen(fullscreen)
-          if fullscreen.maximized
-            && window.native().has_window_style(WS_MAXIMIZEBOX) =>
-        {
-          if !window.native().is_maximized()? {
-            window.native().maximize()?;
-          }
+      }
+      WindowState::Fullscreen(fullscreen)
+        if fullscreen.maximized
+          && window.native().has_window_style(WS_MAXIMIZEBOX) =>
+      {
+        if !window.native().is_maximized()? {
+          window.native().maximize()?;
+        }
 
+        if !is_rect_unchanged {
           window.native().set_window_pos(z_order, &rect, swp_flags)?;
         }
-        _ => {
-          swp_flags |= SWP_FRAMECHANGED;
-
+      }
+      _ => {
+        // Skip repositioning a fullscreen window that already covers
+        // the monitor. Apps in OS fullscreen (e.g. borderless fullscreen
+        // via F11) position themselves, and forcing a position/resize
+        // breaks their frame presentation.
+        //
+        // See: <https://github.com/glzr-io/glazewm/issues/833>
+        //
+        // Also skip when the target rect is unchanged — re-applying the
+        // same rect forces a frame repaint in some apps (e.g. JetBrains
+        // IDEs), which flickers.
+        //
+        // See: <https://github.com/glzr-io/glazewm/issues/1401>
+        if !is_rect_unchanged && !is_fullscreen_covering_monitor(window) {
           window.native().set_window_pos(z_order, &rect, swp_flags)?;
 
-          // When there's a mismatch between the DPI of the monitor and the
-          // window, the window might be sized incorrectly after the first
-          // move. If we set the position twice, inconsistencies after the
-          // first move are resolved.
+          // When there's a mismatch between the DPI of the monitor and
+          // the window, the window might be sized incorrectly after the
+          // first move. If we set the position twice, inconsistencies
+          // after the first move are resolved.
           if window.has_pending_dpi_adjustment() {
             window.native().set_window_pos(z_order, &rect, swp_flags)?;
+
+            // DPI change alters the shadow border delta; refresh the
+            // cached value so subsequent tiling rects are correct.
+            if let Ok(new_borders) = window.native().shadow_borders() {
+              window.update_native_properties(|properties| {
+                properties.shadow_borders = new_borders;
+              });
+            }
           }
         }
       }
+    }
 
-      // Set visibility based on the hide method.
-      if config.value.general.hide_method == HideMethod::Cloak {
-        window.native().set_cloaked(!is_visible)?;
-      } else if is_visible {
-        window.native().show()?;
-      } else {
-        window.native().hide()?;
-      }
+    // Set visibility based on the hide method.
+    if config.value.general.hide_method == HideMethod::Cloak {
+      window.native().set_cloaked(!is_visible)?;
+    } else if is_visible {
+      window.native().show()?;
+    } else {
+      window.native().hide()?;
     }
   }
 
   Ok(())
+}
+
+/// Returns whether the window is a non-maximized fullscreen window that
+/// already covers its monitor.
+///
+/// Such windows are positioned by the app itself (e.g. borderless
+/// fullscreen via F11), and forcing a position/resize breaks their frame
+/// presentation.
+///
+/// See: <https://github.com/glzr-io/glazewm/issues/833>
+fn is_fullscreen_covering_monitor(window: &WindowContainer) -> bool {
+  let is_fullscreen = matches!(
+    window.state(),
+    WindowState::Fullscreen(s) if s.effective_mode() == FullscreenMode::Full
+  );
+
+  if !is_fullscreen {
+    return false;
+  }
+
+  let is_covering = (|| -> anyhow::Result<bool> {
+    let monitor_rect = window
+      .monitor()
+      .context("No monitor.")?
+      .native_properties()
+      .bounds;
+
+    let frame = window.native().frame()?;
+
+    Ok(frame.contains_rect(&monitor_rect.inset(2)))
+  })();
+
+  is_covering.unwrap_or(false)
 }
 
 fn jump_cursor(
@@ -498,6 +586,17 @@ fn jump_cursor(
   };
 
   if let Some(jump_target) = jump_target {
+    // Skip the cursor jump while a mouse button is held down. Warping
+    // the cursor mid-click causes accidental input at the warped
+    // position.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/1019>
+    if state.dispatcher.is_mouse_down(&MouseButton::Left)
+      || state.dispatcher.is_mouse_down(&MouseButton::Right)
+    {
+      return Ok(());
+    }
+
     let center = jump_target.to_rect()?.center_point();
 
     if let Err(err) = state.dispatcher.set_cursor_position(&center) {
@@ -509,16 +608,13 @@ fn jump_cursor(
 }
 
 fn apply_window_effects(
-  // LINT: `window` is only used on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   window: &WindowContainer,
   is_focused: bool,
   config: &UserConfig,
+  state: &WmState,
 ) {
   let window_effects = &config.value.window_effects;
 
-  // LINT: `effect_config` is only used on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   let effect_config = if is_focused {
     &window_effects.focused_window
   } else {
@@ -526,39 +622,60 @@ fn apply_window_effects(
   };
 
   // Skip if both focused + non-focused window effects are disabled.
-  #[cfg(target_os = "windows")]
   if window_effects.focused_window.border.enabled
     || window_effects.other_windows.border.enabled
   {
-    apply_border_effect(window, effect_config);
+    apply_border_effect(window, effect_config, state);
   }
 
-  #[cfg(target_os = "windows")]
   if window_effects.focused_window.hide_title_bar.enabled
     || window_effects.other_windows.hide_title_bar.enabled
   {
     apply_hide_title_bar_effect(window, effect_config);
   }
 
-  #[cfg(target_os = "windows")]
   if window_effects.focused_window.corner_style.enabled
     || window_effects.other_windows.corner_style.enabled
   {
-    apply_corner_effect(window, effect_config);
+    apply_corner_effect(window, effect_config, state);
   }
 
-  #[cfg(target_os = "windows")]
   if window_effects.focused_window.transparency.enabled
     || window_effects.other_windows.transparency.enabled
   {
     apply_transparency_effect(window, effect_config);
   }
+
+  // Modern Windows apps (e.g. Windows Terminal, Chromium/Electron, WinUI
+  // 3) asynchronously process `WM_NCACTIVATE(TRUE)` on activation and
+  // call `DefWindowProc(WM_NCACTIVATE, TRUE)` or re-evaluate non-client
+  // frames, resetting `DWMWA_BORDER_COLOR` to default ~15-50ms after
+  // activation. Re-stamping the focused border after a 50ms delay
+  // ensures the custom border color persists after the application's
+  // activation routine finishes.
+  if is_focused && effect_config.border.enabled {
+    let native_window = window.native().clone();
+    let border_color = effect_config.border.color.clone();
+    let target_generation =
+      state.focus_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let focus_generation = state.focus_generation.clone();
+
+    tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_millis(50)).await;
+
+      // Only re-stamp if this window is still the currently focused window
+      // and no newer focus transition has occurred in the meantime.
+      if focus_generation.load(Ordering::SeqCst) == target_generation {
+        _ = native_window.set_border_color(Some(&border_color));
+      }
+    });
+  }
 }
 
-#[cfg(target_os = "windows")]
 fn apply_border_effect(
   window: &WindowContainer,
   effect_config: &WindowEffectConfig,
+  state: &WmState,
 ) {
   let border_color = if effect_config.border.enabled {
     Some(&effect_config.border.color)
@@ -566,20 +683,32 @@ fn apply_border_effect(
     None
   };
 
+  // Skip redundant border stamps: re-applying the same
+  // `DWMWA_BORDER_COLOR` forces DWM to re-evaluate the window frame,
+  // which visibly flickers (particularly in apps that co-manage their
+  // frame, like JetBrains IDEs and Chromium/Electron apps).
+  let handle = window.native().id().0;
+
+  if let Ok(mut cache) = state.border_stamp_cache.lock() {
+    if let Some(stamp) = cache.get_mut(&handle) {
+      if stamp.color == border_color.cloned() {
+        return;
+      }
+      stamp.color = border_color.cloned();
+    } else {
+      cache.insert(
+        handle,
+        BorderStamp {
+          color: border_color.cloned(),
+          corner_style: None,
+        },
+      );
+    }
+  }
+
   _ = window.native().set_border_color(border_color);
-
-  let native = window.native().clone();
-  let border_color = border_color.cloned();
-
-  // Re-apply border color after a short delay to better handle
-  // windows that change it themselves.
-  tokio::task::spawn(async move {
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    _ = native.set_border_color(border_color.as_ref());
-  });
 }
 
-#[cfg(target_os = "windows")]
 fn apply_hide_title_bar_effect(
   window: &WindowContainer,
   effect_config: &WindowEffectConfig,
@@ -589,21 +718,41 @@ fn apply_hide_title_bar_effect(
     .set_title_bar_visibility(!effect_config.hide_title_bar.enabled);
 }
 
-#[cfg(target_os = "windows")]
 fn apply_corner_effect(
   window: &WindowContainer,
   effect_config: &WindowEffectConfig,
+  state: &WmState,
 ) {
   let corner_style = if effect_config.corner_style.enabled {
-    &effect_config.corner_style.style
+    effect_config.corner_style.style.clone()
   } else {
-    &CornerStyle::Default
+    CornerStyle::Default
   };
 
-  _ = window.native().set_corner_style(corner_style);
+  // Skip redundant corner style stamps (same cache pattern as
+  // borders).
+  let handle = window.native().id().0;
+
+  if let Ok(mut cache) = state.border_stamp_cache.lock() {
+    if let Some(stamp) = cache.get_mut(&handle) {
+      if stamp.corner_style.as_ref() == Some(&corner_style) {
+        return;
+      }
+      stamp.corner_style = Some(corner_style.clone());
+    } else {
+      cache.insert(
+        handle,
+        BorderStamp {
+          color: None,
+          corner_style: Some(corner_style.clone()),
+        },
+      );
+    }
+  }
+
+  _ = window.native().set_corner_style(&corner_style);
 }
 
-#[cfg(target_os = "windows")]
 fn apply_transparency_effect(
   window: &WindowContainer,
   effect_config: &WindowEffectConfig,

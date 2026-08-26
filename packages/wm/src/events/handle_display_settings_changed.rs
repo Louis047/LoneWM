@@ -1,5 +1,5 @@
 use anyhow::Context;
-use wm_common::try_warn;
+use wm_platform::Display;
 
 use crate::{
   commands::monitor::{
@@ -18,21 +18,62 @@ pub fn handle_display_settings_changed(
 ) -> anyhow::Result<()> {
   tracing::info!("Display settings changed.");
 
-  // Ignore the event if retrieval of the displays or their properties
-  // fails (can happen transiently during sleep/wake).
-  let displays = try_warn!(state
-    .dispatcher
-    .sorted_displays()
-    .map_err(anyhow::Error::from)
-    .and_then(|displays| {
-      displays
-        .into_iter()
-        .map(|display| {
-          let properties = NativeMonitorProperties::try_from(&display)?;
-          Ok((display, properties))
-        })
-        .try_collect::<Vec<_>>()
-    }));
+  // Ignore the event if retrieval of the displays fails (can happen
+  // transiently during sleep/wake).
+  let displays = match state.dispatcher.sorted_displays() {
+    Ok(displays) => displays,
+    Err(err) => {
+      tracing::warn!("Failed to get displays: {err}");
+      state.needs_display_resync = true;
+      return Ok(());
+    }
+  };
+
+  // Retrieval of a display's properties can fail transiently (e.g. when a
+  // monitor is connected but not yet enumerable). Rather than aborting the
+  // entire reconciliation — which would leave the WM's monitor state stale
+  // until restart — flag a resync and keep the current state until the
+  // retry succeeds.
+  //
+  // See: <https://github.com/glzr-io/glazewm/issues/1233>
+  let mut has_unresolved_displays = false;
+
+  let displays: Vec<_> = displays
+    .into_iter()
+    .filter_map(|display| {
+      match NativeMonitorProperties::try_from(&display) {
+        Ok(properties) => Some((display, properties)),
+        Err(err) => {
+          tracing::warn!("Failed to get properties of display: {err}");
+          has_unresolved_displays = true;
+          None
+        }
+      }
+    })
+    .collect();
+
+  if has_unresolved_displays {
+    tracing::warn!(
+      "Failed to get properties of one or more displays. Will retry."
+    );
+
+    state.needs_display_resync = true;
+    return Ok(());
+  }
+
+  // Skip reconciliation when the display state is unchanged. Display
+  // settings changed events can be triggered by non-display changes (e.g.
+  // a USB device being connected), and reconciling would needlessly
+  // reposition floating windows.
+  //
+  // See: <https://github.com/glzr-io/glazewm/issues/1411>
+  if displays_unchanged(&displays, state) {
+    tracing::debug!(
+      "Display state is unchanged. Skipping reconciliation."
+    );
+
+    return Ok(());
+  }
 
   let mut pending_monitors = state.monitors();
   let mut unmatched_displays = Vec::new();
@@ -92,7 +133,11 @@ pub fn handle_display_settings_changed(
     let workspace = window.workspace().context("No workspace.")?;
 
     let should_recenter = if window.has_custom_floating_placement() {
-      let workspace_rect = workspace.to_rect()?;
+      // Compare against the max workspace rect (which extends into the
+      // outer gaps) rather than the gapped workspace rect, so that
+      // floating windows positioned within the outer gaps aren't
+      // needlessly recentered.
+      let workspace_rect = workspace.max_workspace_rect()?;
 
       // Keep the placement if it still intersects the workspace, since
       // `PlatformEvent::DisplaySettingsChanged` can be triggered by
@@ -106,11 +151,22 @@ pub fn handle_display_settings_changed(
     };
 
     if should_recenter {
-      window.set_floating_placement(
-        window
-          .floating_placement()
-          .translate_to_center(&workspace.to_rect()?),
-      );
+      // Clamp the placement so that it fits within the workspace (e.g.
+      // when a monitor is disconnected and its windows move to a smaller
+      // one). An oversized placement can be misclassified as fullscreen.
+      //
+      // See: <https://github.com/glzr-io/glazewm/issues/856>
+      let max_workspace_rect = workspace.max_workspace_rect()?;
+
+      let clamped_placement = window
+        .floating_placement()
+        .clamp_size(
+          (max_workspace_rect.width() - 10).max(100),
+          (max_workspace_rect.height() - 10).max(100),
+        )
+        .translate_to_center(&workspace.to_rect()?);
+
+      window.set_floating_placement(clamped_placement);
     }
   }
 
@@ -120,6 +176,39 @@ pub fn handle_display_settings_changed(
     .queue_container_to_redraw(state.root_container.clone());
 
   Ok(())
+}
+
+/// Returns whether the displays are identical to the WM's existing
+/// monitors (same count, and each display matches a monitor with equal
+/// properties).
+fn displays_unchanged(
+  displays: &[(Display, NativeMonitorProperties)],
+  state: &WmState,
+) -> bool {
+  let monitors = state.monitors();
+
+  displays.len() == monitors.len()
+    && displays.iter().all(|(_, properties)| {
+      monitors.iter().any(|monitor| {
+        monitor_properties_match(&monitor.native_properties(), properties)
+      })
+    })
+}
+
+/// Returns whether the properties of an existing monitor match the
+/// properties of a display.
+fn monitor_properties_match(
+  existing: &NativeMonitorProperties,
+  new: &NativeMonitorProperties,
+) -> bool {
+  let identity_matches = existing.handle == new.handle;
+
+  identity_matches
+    && existing.device_name == new.device_name
+    && existing.working_area == new.working_area
+    && existing.bounds == new.bounds
+    && existing.dpi == new.dpi
+    && (existing.scale_factor - new.scale_factor).abs() < f32::EPSILON
 }
 
 /// Finds the monitor matching the given display properties.
@@ -133,12 +222,7 @@ fn find_matching_monitor<'a>(
     let existing = monitor.native_properties();
 
     let is_match = {
-      #[cfg(target_os = "macos")]
-      {
-        existing.device_uuid == properties.device_uuid
-      }
-
-      // On Windows, match the monitor by:
+      // Match the monitor by:
       // 1. Its handle
       // 2. Its device path
       // 3. Its hardware ID (if unique)
@@ -146,7 +230,6 @@ fn find_matching_monitor<'a>(
       // Monitor handles and device paths are unique, but can change over
       // time. The hardware ID is not guaranteed to be unique, so we
       // match against that last.
-      #[cfg(target_os = "windows")]
       {
         existing.handle == properties.handle
           || existing.device_path.as_deref().is_some_and(|device_path| {

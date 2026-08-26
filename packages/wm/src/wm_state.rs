@@ -1,4 +1,8 @@
-use std::time::Instant;
+use std::{
+  collections::{HashMap, HashSet},
+  sync::{atomic::AtomicU64, Arc, Mutex},
+  time::Instant,
+};
 
 use anyhow::Context;
 use tokio::sync::mpsc::{self};
@@ -6,10 +10,9 @@ use tracing::warn;
 use uuid::Uuid;
 use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
 use wm_platform::{
-  Direction, Dispatcher, Display, NativeWindow, Point, Rect,
+  Direction, Dispatcher, Display, NativeWindow, NativeWindowWindowsExt,
+  OpacityValue, Point, Rect, WindowId,
 };
-#[cfg(target_os = "windows")]
-use wm_platform::{NativeWindowWindowsExt, OpacityValue};
 
 use crate::{
   commands::{
@@ -27,6 +30,7 @@ use crate::{
   user_config::UserConfig,
 };
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct WmState {
   /// Root node of the container tree. Monitors are the children of the
   /// root node, followed by workspaces, then split containers/windows.
@@ -64,11 +68,67 @@ pub struct WmState {
   /// Whether the WM is paused.
   pub is_paused: bool,
 
+  /// Whether display reconciliation should be retried.
+  ///
+  /// Set when retrieval of a display's properties fails (can happen
+  /// transiently when a monitor is connected or the system resumes from
+  /// sleep). Checked on the periodic cleanup interval.
+  pub needs_display_resync: bool,
+
+  /// Outer rects most recently set by the WM, by window ID, along with
+  /// when they were set.
+  ///
+  /// Used to detect echo `MovedOrResized` events caused by the WM's own
+  /// repositioning, so they aren't misclassified by the fullscreen
+  /// heuristic, and to guard against transient state changes (e.g.
+  /// spurious minimize events) during WM-initiated moves.
+  pub wm_set_frames: HashMap<Uuid, (Rect, Instant)>,
+
+  /// Time at which each window was managed.
+  ///
+  /// Used to distinguish app-initiated placement changes shortly after
+  /// launch (e.g. an app restoring its saved maximized placement) from
+  /// user-initiated ones.
+  pub managed_timestamps: HashMap<Uuid, Instant>,
+
+  /// Managed windows by their native window ID.
+  ///
+  /// Provides O(1) lookup of the container for a native window instead
+  /// of walking the container tree on every window event.
+  windows_by_native_id: HashMap<WindowId, WindowContainer>,
+
+  /// Native window IDs of managed windows, shared with the platform
+  /// layer's window event hook.
+  ///
+  /// Used to filter high-frequency events (e.g. location changes) for
+  /// unmanaged windows at the source.
+  managed_window_ids: Arc<Mutex<HashSet<WindowId>>>,
+
   /// Whether the OS focused window is the same as the WM focused window.
   pub is_focus_synced: bool,
 
+  /// Whether windows of elevated (admin) processes can be managed.
+  ///
+  /// Requires the WM itself to be elevated or have `UIAccess` (i.e. the
+  /// signed installer build).
+  pub can_manage_elevated: bool,
+
+  /// Last border color stamped per window handle, with a generation
+  /// counter.
+  ///
+  /// Used to skip redundant `DWMWA_BORDER_COLOR` re-stamps (which force
+  /// DWM to re-evaluate the frame and visibly flicker) and to let the
+  /// delayed re-stamp task detect that a newer color has since been
+  /// applied, so a stale task cannot overwrite it.
+  pub border_stamp_cache: Arc<Mutex<HashMap<isize, BorderStamp>>>,
+
   /// Whether the initial state has been populated.
   has_initialized: bool,
+
+  /// Monotonic counter incremented on every focus transition to prevent
+  /// stale delayed border re-stamp tasks from overwriting newer focus
+  /// state.
+  pub focus_generation: Arc<AtomicU64>,
 
   /// Sender for emitting WM-related events.
   event_tx: mpsc::UnboundedSender<WmEvent>,
@@ -93,7 +153,15 @@ impl WmState {
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
       is_paused: false,
+      needs_display_resync: false,
+      wm_set_frames: HashMap::new(),
+      managed_timestamps: HashMap::new(),
       is_focus_synced: false,
+      can_manage_elevated: wm_platform::can_manage_elevated_windows(),
+      border_stamp_cache: Arc::new(Mutex::new(HashMap::new())),
+      focus_generation: Arc::new(AtomicU64::new(0)),
+      windows_by_native_id: HashMap::new(),
+      managed_window_ids: Arc::new(Mutex::new(HashSet::new())),
       has_initialized: false,
       event_tx,
       exit_tx,
@@ -332,10 +400,35 @@ impl WmState {
     &self,
     native_window: &NativeWindow,
   ) -> Option<WindowContainer> {
-    self
-      .windows()
-      .into_iter()
-      .find(|window| &*window.native() == native_window)
+    self.windows_by_native_id.get(&native_window.id()).cloned()
+  }
+
+  /// Gets the shared set of managed window IDs, for use by the platform
+  /// layer's window event hook.
+  #[must_use]
+  pub fn managed_window_ids(&self) -> Arc<Mutex<HashSet<WindowId>>> {
+    self.managed_window_ids.clone()
+  }
+
+  /// Indexes a managed window for O(1) lookups and hook-side event
+  /// filtering.
+  pub(crate) fn index_window(&mut self, window: &WindowContainer) {
+    let native_id = window.native().id();
+
+    self.windows_by_native_id.insert(native_id, window.clone());
+
+    if let Ok(mut ids) = self.managed_window_ids.lock() {
+      ids.insert(native_id);
+    }
+  }
+
+  /// Removes a window from the managed window index.
+  pub(crate) fn unindex_window(&mut self, native_id: WindowId) {
+    self.windows_by_native_id.remove(&native_id);
+
+    if let Ok(mut ids) = self.managed_window_ids.lock() {
+      ids.remove(&native_id);
+    }
   }
 
   pub fn workspace_by_name(
@@ -621,13 +714,26 @@ impl WmState {
       .find(|descendant| descendant.state() != WindowState::Minimized)
       .map(Into::into);
 
+    // Avoid falling back to a minimized window — focusing it has no
+    // visible effect. Prefer resetting focus to the workspace.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/1115>
     non_minimized_focus_target
-      .or(descendant_focus_order.first().cloned())
+      .or_else(|| {
+        descendant_focus_order
+          .iter()
+          .find(|descendant| {
+            descendant
+              .as_window_container()
+              .is_ok_and(|window| window.state() != WindowState::Minimized)
+          })
+          .cloned()
+      })
       .or(Some(workspace.into()))
   }
 
   /// Returns all containers that contain the given point.
-  #[allow(clippy::unused_self)]
+  #[allow(dead_code, clippy::unused_self)]
   pub fn containers_at_point(
     &self,
     origin_container: &Container,
@@ -663,11 +769,19 @@ impl WmState {
   /// windows in WM state.
   ///
   /// See: <https://github.com/glzr-io/glazewm/issues/1219>
+  /// See: <https://github.com/glzr-io/glazewm/issues/1225>
   pub fn cleanup_invalid_windows(&mut self) -> anyhow::Result<()> {
-    let invalid_windows = self
-      .windows()
-      .into_iter()
-      .filter(|window| !window.native().is_valid());
+    let invalid_windows = self.windows().into_iter().filter(|window| {
+      if !window.native().is_valid() {
+        return true;
+      }
+
+      // Handles can remain valid after the window's thread has exited.
+      // Such "ghost" windows never receive destroy events but are
+      // permanently unresponsive.
+
+      !window.native().has_owning_thread()
+    });
 
     for window in invalid_windows {
       tracing::info!("Removing invalid window: {}", window);
@@ -677,8 +791,42 @@ impl WmState {
     // Prune ignored windows that are no longer valid.
     self.ignored_windows.retain(NativeWindow::is_valid);
 
+    // Prune WM-set frame cache entries for windows that are no longer
+    // managed.
+    let managed_window_ids = self
+      .windows()
+      .into_iter()
+      .map(|window| window.id())
+      .collect::<Vec<_>>();
+    self
+      .wm_set_frames
+      .retain(|id, _| managed_window_ids.contains(id));
+    self
+      .managed_timestamps
+      .retain(|id, _| managed_window_ids.contains(id));
+
+    // Prune border stamp cache entries for windows that are no longer
+    // managed.
+    let managed_handles = self
+      .windows()
+      .into_iter()
+      .map(|window| window.native().id().0);
+    let managed_handles = managed_handles.collect::<Vec<_>>();
+
+    if let Ok(mut cache) = self.border_stamp_cache.lock() {
+      cache.retain(|handle, _| managed_handles.contains(handle));
+    }
+
     Ok(())
   }
+}
+
+/// The last window effects applied to a window, used to skip
+/// redundant `DwmSetWindowAttribute` calls that cause flickering.
+#[derive(Clone, Debug)]
+pub struct BorderStamp {
+  pub color: Option<wm_platform::Color>,
+  pub corner_style: Option<wm_platform::CornerStyle>,
 }
 
 impl Drop for WmState {
@@ -686,8 +834,7 @@ impl Drop for WmState {
     let managed_windows = self.windows();
 
     for window in &managed_windows {
-      // Redraw windows to their intended positions. On macOS, this will
-      // unhide windows that are on other workspaces.
+      // Redraw windows to their intended positions.
       if let Ok(rect) = window.to_rect() {
         if let Err(err) = window.native().set_frame(&rect) {
           warn!("Failed to redraw window on cleanup: {:?}", err);
@@ -695,17 +842,41 @@ impl Drop for WmState {
       }
 
       // Reset any effects on Windows.
-      #[cfg(target_os = "windows")]
       {
+        // Uncloak the window in case it was cloaked by the WM (e.g. for
+        // being on an inactive workspace). `show()` alone does not clear
+        // the cloak.
+        //
+        // See: <https://github.com/glzr-io/glazewm/issues/1358>
+        let _ = window.native().set_cloaked(false);
+
         if let Err(err) = window.native().show() {
           warn!("Failed to show window: {:?}", err);
         }
 
         let _ = window.native().set_taskbar_visibility(true);
-        let _ = window.native().set_border_color(None);
+
+        // Only call `set_border_color` when the cached color differs
+        // from `None` — redundant DWM stamps flicker.
+        let handle = window.native().id().0;
+        let needs_reset = self
+          .border_stamp_cache
+          .lock()
+          .ok()
+          .and_then(|cache| cache.get(&handle).cloned())
+          .is_some_and(|stamp| stamp.color.is_some());
+
+        if needs_reset {
+          let _ = window.native().set_border_color(None);
+        }
+
         let _ = window
           .native()
           .set_transparency(&OpacityValue::from_alpha(u8::MAX));
+
+        if let Ok(mut cache) = self.border_stamp_cache.lock() {
+          cache.remove(&handle);
+        }
       }
     }
   }

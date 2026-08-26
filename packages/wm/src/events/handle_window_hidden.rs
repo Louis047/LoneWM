@@ -1,6 +1,6 @@
 use tracing::info;
 use wm_common::{DisplayState, HideMethod};
-use wm_platform::NativeWindow;
+use wm_platform::{NativeWindow, NativeWindowWindowsExt};
 
 use crate::{
   commands::window::unmanage_window, traits::WindowGetters,
@@ -25,14 +25,26 @@ pub fn handle_window_hidden(
       return Ok(());
     }
 
-    // Unmanage the window if it's not in a display state transition. Also,
-    // since window events are not 100% guaranteed to be in correct order,
-    // we need to ignore events where the window is not actually hidden.
-    if (config.value.general.hide_method == HideMethod::PlaceInCorner
-      || window.display_state() == DisplayState::Shown)
-      && !window.native().is_visible().unwrap_or(false)
+    // Unmanage the window if it's not in a display state transition.
+    //
+    // The visibility check is based on the `WS_VISIBLE` style rather than
+    // `NativeWindow::is_visible`, which also treats DWM-cloaked windows
+    // as hidden. The shell cloaks UWP and Electron apps when they're
+    // minimized or suspended — unmanaging a window in that state removes
+    // it from the tree (leaking it through workspaces) and can leave it
+    // permanently cloaked. Minimized windows also keep `WS_VISIBLE`, so
+    // they're likewise skipped here.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/1350>
+    // See: <https://github.com/glzr-io/glazewm/issues/992>
+    if config.value.general.hide_method == HideMethod::PlaceInCorner
+      || window.display_state() == DisplayState::Shown
     {
-      unmanage_window(window, state)?;
+      let is_actually_hidden = !window.native().is_shown().unwrap_or(true);
+
+      if is_actually_hidden {
+        unmanage_window(window, state)?;
+      }
     }
   }
 

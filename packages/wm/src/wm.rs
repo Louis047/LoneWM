@@ -2,16 +2,13 @@ use anyhow::{bail, Context};
 use tokio::sync::mpsc::{self};
 use tracing::warn;
 use uuid::Uuid;
-#[cfg(target_os = "windows")]
-use wm_common::TitleBarVisibility;
 use wm_common::{
-  FloatingStateConfig, FullscreenStateConfig, InvokeCommand, WindowState,
-  WmEvent,
+  FloatingStateConfig, FullscreenMode, FullscreenStateConfig,
+  InvokeCommand, TitleBarVisibility, WindowState, WmEvent,
 };
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{
-  Dispatcher, LengthValue, PlatformEvent, RectDelta, WindowEvent,
+  Dispatcher, LengthValue, NativeWindowWindowsExt, PlatformEvent,
+  RectDelta, WindowEvent,
 };
 
 use crate::{
@@ -540,6 +537,7 @@ impl WindowManager {
         _ => Ok(()),
       },
       InvokeCommand::SetFullscreen {
+        mode,
         maximized,
         shown_on_top,
       } => match subject_container.as_window_container() {
@@ -547,13 +545,23 @@ impl WindowManager {
           let fullscreen_defaults =
             &config.value.window_behavior.state_defaults.fullscreen;
 
+          let mode = mode.unwrap_or_else(|| {
+            if maximized.unwrap_or(fullscreen_defaults.maximized) {
+              FullscreenMode::Monocle
+            } else {
+              fullscreen_defaults.mode
+            }
+          });
+
           update_window_state(
             window.clone(),
             WindowState::Fullscreen(FullscreenStateConfig {
+              mode,
               maximized: maximized
                 .unwrap_or(fullscreen_defaults.maximized),
               shown_on_top: shown_on_top
                 .unwrap_or(fullscreen_defaults.shown_on_top),
+              respect_gaps: fullscreen_defaults.respect_gaps,
             }),
             state,
             config,
@@ -593,25 +601,19 @@ impl WindowManager {
           _ => Ok(()),
         }
       }
-      InvokeCommand::SetTitleBarVisibility {
-        // LINT: `visibility` is only used on Windows.
-        #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-        visibility,
-      } => match subject_container.as_window_container() {
-        #[cfg(target_os = "windows")]
-        Ok(window) => {
-          _ = window.native().set_title_bar_visibility(
-            *visibility == TitleBarVisibility::Shown,
-          );
-          Ok(())
+      InvokeCommand::SetTitleBarVisibility { visibility } => {
+        match subject_container.as_window_container() {
+          Ok(window) => {
+            _ = window.native().set_title_bar_visibility(
+              *visibility == TitleBarVisibility::Shown,
+            );
+            Ok(())
+          }
+          _ => Ok(()),
         }
-        _ => Ok(()),
-      },
-      // LINT: `args` is only used on Windows.
-      #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+      }
       InvokeCommand::SetTransparency(args) => {
         match subject_container.as_window_container() {
-          #[cfg(target_os = "windows")]
           Ok(window) => {
             if let Some(opacity) = &args.opacity {
               _ = window.native().set_transparency(opacity);
@@ -676,6 +678,7 @@ impl WindowManager {
         _ => Ok(()),
       },
       InvokeCommand::ToggleFullscreen {
+        mode,
         maximized,
         shown_on_top,
       } => match subject_container.as_window_container() {
@@ -683,12 +686,22 @@ impl WindowManager {
           let fullscreen_defaults =
             &config.value.window_behavior.state_defaults.fullscreen;
 
+          let mode = mode.unwrap_or_else(|| {
+            if maximized.unwrap_or(fullscreen_defaults.maximized) {
+              FullscreenMode::Monocle
+            } else {
+              fullscreen_defaults.mode
+            }
+          });
+
           let target_state =
             WindowState::Fullscreen(FullscreenStateConfig {
+              mode,
               maximized: maximized
                 .unwrap_or(fullscreen_defaults.maximized),
               shown_on_top: shown_on_top
                 .unwrap_or(fullscreen_defaults.shown_on_top),
+              respect_gaps: fullscreen_defaults.respect_gaps,
             });
 
           update_window_state(

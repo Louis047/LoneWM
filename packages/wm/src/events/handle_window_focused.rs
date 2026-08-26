@@ -1,7 +1,7 @@
 use anyhow::Context;
 use tracing::info;
 use wm_common::{DisplayState, WindowRuleEvent, WmEvent};
-use wm_platform::NativeWindow;
+use wm_platform::{NativeWindow, NativeWindowWindowsExt};
 
 use crate::{
   commands::{
@@ -63,6 +63,15 @@ pub fn handle_window_focused(
     if focused_container == window.clone().into() {
       state.is_focus_synced = true;
       state.pending_sync.queue_workspace_to_reorder(workspace);
+
+      // Invalidate border stamp cache for this window so that after the
+      // app finishes processing its internal WM_NCACTIVATE / theme
+      // routine, LoneWM re-applies the border color cleanly.
+      if let Ok(mut cache) = state.border_stamp_cache.lock() {
+        cache.remove(&window.native().id().0);
+      }
+      state.pending_sync.queue_focused_effect_update();
+
       return Ok(());
     }
 
@@ -71,14 +80,25 @@ pub fn handle_window_focused(
     // Handle focus events from windows on hidden workspaces. For example,
     // if Discord is forcefully shown by the OS when it's on a hidden
     // workspace, switch focus to Discord's workspace.
+    //
+    // Only do so if the window is actually shown — stale focus events can
+    // arrive for windows hidden via the `hide` method after a workspace
+    // switch, and switching to their workspace would land on the same
+    // workspace.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/860>
     if window.display_state() == DisplayState::Hidden {
-      info!("Focusing off-screen window: {window}");
+      let is_actually_shown = window.native().is_shown().unwrap_or(true);
 
-      focus_workspace(
-        WorkspaceTarget::Name(workspace.config().name),
-        state,
-        config,
-      )?;
+      if is_actually_shown {
+        info!("Focusing off-screen window: {window}");
+
+        focus_workspace(
+          WorkspaceTarget::Name(workspace.config().name),
+          state,
+          config,
+        )?;
+      }
     }
 
     // Update the WM's focus state.
@@ -91,6 +111,10 @@ pub fn handle_window_focused(
       state,
       config,
     )?;
+
+    if let Ok(mut cache) = state.border_stamp_cache.lock() {
+      cache.remove(&window.native().id().0);
+    }
 
     state.is_focus_synced = true;
     state.pending_sync.queue_workspace_to_reorder(workspace);

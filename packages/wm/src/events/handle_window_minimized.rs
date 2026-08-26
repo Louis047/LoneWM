@@ -6,7 +6,7 @@ use crate::{
   commands::{
     container::set_focused_descendant, window::update_window_state,
   },
-  traits::WindowGetters,
+  traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -20,13 +20,36 @@ pub fn handle_window_minimized(
 
   // Update the window's state to be minimized.
   if let Some(window) = found_window {
-    let is_minimized = try_warn!(window.native().is_minimized());
+    // Ignore minimize events for windows that were just repositioned by
+    // the WM. Restoring and moving a window across monitors can
+    // transiently produce a minimize event, which would otherwise leave
+    // the window stuck minimized.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/1259>
+    let is_recent_wm_reposition = state
+      .wm_set_frames
+      .get(&window.id())
+      .is_some_and(|(_, time)| time.elapsed().as_millis() < 500);
+
+    // The minimize event is treated as authoritative. For some windows
+    // (e.g. Electron apps), a synchronous `IsIconic` check at the start
+    // of the minimize can still return false, which would leave the
+    // window as a focus target even though it's minimized.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/1115>
+    if is_recent_wm_reposition {
+      let is_minimized = try_warn!(window.native().is_minimized());
+
+      if !is_minimized {
+        return Ok(());
+      }
+    }
 
     window.update_native_properties(|properties| {
-      properties.is_minimized = is_minimized;
+      properties.is_minimized = true;
     });
 
-    if is_minimized && window.state() != WindowState::Minimized {
+    if window.state() != WindowState::Minimized {
       info!("Window minimized: {window}");
 
       let window = update_window_state(

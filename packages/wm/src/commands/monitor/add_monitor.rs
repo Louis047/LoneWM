@@ -112,11 +112,21 @@ pub fn move_workspace_to_monitor(
   for window in windows {
     window.set_has_pending_dpi_adjustment(true);
 
-    window.set_floating_placement(
-      window
-        .floating_placement()
-        .translate_to_center(&workspace.to_rect()?),
-    );
+    // Clamp the placement so that it fits within the workspace's bounds
+    // (e.g. when the workspace moves from a larger monitor).
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/1418>
+    let max_workspace_rect = workspace.max_workspace_rect()?;
+
+    let clamped_placement = window
+      .floating_placement()
+      .clamp_size(
+        (max_workspace_rect.width() - 10).max(100),
+        (max_workspace_rect.height() - 10).max(100),
+      )
+      .translate_to_center(&workspace.to_rect()?);
+
+    window.set_floating_placement(clamped_placement);
   }
 
   // Get currently displayed workspace on the target monitor.
