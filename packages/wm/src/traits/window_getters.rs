@@ -10,6 +10,19 @@ use crate::{
   user_config::UserConfig,
 };
 
+/// Tolerance used when deciding whether a window should *remain*
+/// fullscreen. Larger values make it easier to stay fullscreen.
+const KEEP_FULLSCREEN_TOLERANCE: i32 = 2;
+
+/// Tolerance used when deciding whether a window should *become*
+/// fullscreen. The frame must exceed the workspace bounds by more than
+/// this many px on all sides.
+///
+/// This must be larger than the OS's positioning error (~1px) so that
+/// windows placed by the WM near the workspace bounds aren't
+/// misclassified as fullscreen.
+pub(crate) const ENTER_FULLSCREEN_TOLERANCE: i32 = 2;
+
 #[delegatable_trait]
 pub trait WindowGetters: CommonGetters {
   fn state(&self) -> WindowState;
@@ -67,10 +80,7 @@ pub trait WindowGetters: CommonGetters {
   fn total_border_delta(&self) -> anyhow::Result<RectDelta> {
     let border_delta = self.border_delta();
 
-    #[cfg(target_os = "windows")]
     let shadow_border_delta = self.native_properties().shadow_borders;
-    #[cfg(not(target_os = "windows"))]
-    let shadow_border_delta = RectDelta::zero();
 
     // TODO: Allow percentage length values.
     Ok(RectDelta {
@@ -98,7 +108,15 @@ pub trait WindowGetters: CommonGetters {
   /// A window is considered fullscreen if its frame covers or exceeds the
   /// workspace bounds, meaning all sides extend into the outer gaps.
   ///
-  /// NOTE: The OS can be off by up to 1px when positioning windows.
+  /// NOTE: The OS can be off by up to 1px when positioning windows. An
+  /// enter tolerance larger than that (and than the error introduced by
+  /// DWM shadow borders on placements) is used, so that windows placed by
+  /// the WM near the workspace bounds aren't misclassified as fullscreen.
+  /// This previously broke tiling with small outer gaps and caused
+  /// fullscreen <-> floating oscillation loops.
+  ///
+  /// See: <https://github.com/glzr-io/glazewm/issues/697>
+  /// See: <https://github.com/glzr-io/glazewm/issues/1418>
   fn should_fullscreen(
     &self,
     workspace: &Workspace,
@@ -112,13 +130,17 @@ pub trait WindowGetters: CommonGetters {
     let should_fullscreen = match self.state() {
       // Keep as fullscreen if the frame covers the workspace bounds.
       WindowState::Fullscreen(fullscreen) if !fullscreen.maximized => {
-        frame.contains_rect(&workspace_rect.inset(1))
+        frame
+          .contains_rect(&workspace_rect.inset(KEEP_FULLSCREEN_TOLERANCE))
       }
 
-      // Change to fullscreen if the frame *exceeds* the workspace bounds.
+      // Change to fullscreen if the frame *exceeds* the workspace bounds
+      // by more than the enter tolerance on all sides.
       // NOTE: This is never possible with 0px outer gaps; the window has
       // to be made fullscreen via the `set-fullscreen` command.
-      _ => frame.inset(1).contains_rect(&workspace_rect),
+      _ => frame
+        .inset(ENTER_FULLSCREEN_TOLERANCE)
+        .contains_rect(&workspace_rect),
     };
 
     Ok(should_fullscreen)

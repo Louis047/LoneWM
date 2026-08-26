@@ -1,10 +1,15 @@
 use anyhow::Context;
 use tracing::{info, warn};
 use wm_common::WindowState;
+use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
-  commands::container::{
-    move_container_within_tree, replace_container, resize_tiling_container,
+  commands::{
+    container::{
+      move_container_within_tree, replace_container,
+      resize_tiling_container,
+    },
+    window::manage_window::dwindle_insertion_target,
   },
   models::{Container, InsertionTarget, WindowContainer},
   traits::{CommonGetters, TilingSizeGetters, WindowGetters},
@@ -29,8 +34,54 @@ pub fn update_window_state(
 
   info!("Updating window state: {:?}.", target_state);
 
-  match target_state {
-    WindowState::Tiling => set_tiling(&window, state, config),
+  // Refresh the window's cached shadow borders before the redraw. They
+  // can change while a window is fullscreen (DWM adjusts the extended
+  // frame bounds), and positioning with a stale cache misaligns the
+  // window (e.g. overlapping the bar or missing gaps when leaving
+  // fullscreen).
+  //
+  // See: <https://github.com/glzr-io/glazewm/issues/996>
+  // See: <https://github.com/glzr-io/glazewm/issues/737>
+  if !window.native().is_maximized().unwrap_or(false) {
+    let shadow_borders = window.native().shadow_borders().ok();
+    if let Some(shadow_borders) = shadow_borders {
+      window.update_native_properties(|properties| {
+        properties.shadow_borders = shadow_borders;
+      });
+    }
+  }
+
+  match (&window, &target_state) {
+    (
+      WindowContainer::TilingWindow(tiling_win),
+      WindowState::Fullscreen(_),
+    ) => {
+      let current_state = tiling_win.state();
+      tiling_win.set_prev_state(current_state);
+      tiling_win.set_state(target_state);
+
+      let workspace = tiling_win.workspace().context("No workspace.")?;
+      state
+        .pending_sync
+        .queue_container_to_redraw(tiling_win.clone())
+        .queue_workspace_to_reorder(workspace);
+
+      Ok(tiling_win.clone().into())
+    }
+    (WindowContainer::TilingWindow(tiling_win), WindowState::Tiling) => {
+      let current_state = tiling_win.state();
+      tiling_win.set_prev_state(current_state);
+      tiling_win.set_state(WindowState::Tiling);
+
+      let workspace = tiling_win.workspace().context("No workspace.")?;
+      state
+        .pending_sync
+        .queue_container_to_redraw(tiling_win.clone())
+        .queue_workspace_to_reorder(workspace);
+
+      Ok(tiling_win.clone().into())
+    }
+    (_, WindowState::Tiling) => set_tiling(&window, state, config),
     _ => set_non_tiling(window, target_state, state),
   }
 }
@@ -71,11 +122,13 @@ fn set_tiling(
     })
     // Fallback to the last focused tiling window within the workspace.
     .or_else(|| {
-      let focused_window = workspace
+      let sibling = workspace
         .descendant_focus_order()
-        .find(Container::is_tiling_window)?;
+        .find(Container::is_tiling_window);
 
-      Some((focused_window.parent()?, focused_window.index() + 1))
+      sibling.map(|sibling| {
+        dwindle_insertion_target(&sibling, &config.value.gaps)
+      })
     })
     // Default to inserting at the end of the workspace.
     .unwrap_or((workspace.clone().into(), workspace.child_count()));
@@ -95,6 +148,9 @@ fn set_tiling(
     target_index,
     state,
   )?;
+
+  // Update the managed window index with the new container.
+  state.index_window(&tiling_window.clone().into());
 
   #[allow(clippy::cast_precision_loss)]
   if let Some(insertion_target) = &insertion_target {
@@ -190,6 +246,9 @@ fn set_non_tiling(
         &workspace.clone().into(),
         window.index(),
       )?;
+
+      // Update the managed window index with the new container.
+      state.index_window(&non_tiling_window.clone().into());
 
       state
         .pending_sync

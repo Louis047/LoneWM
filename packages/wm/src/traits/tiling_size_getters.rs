@@ -34,51 +34,48 @@ pub trait TilingSizeGetters: CommonGetters {
     Ok((
       gaps_config
         .inner_gap
-        .to_px(monitor_rect.height(), Some(scale_factor)),
+        .to_px(monitor_rect.width(), Some(scale_factor)),
       gaps_config
         .inner_gap
-        .to_px(monitor_rect.width(), Some(scale_factor)),
+        .to_px(monitor_rect.height(), Some(scale_factor)),
     ))
   }
 
   /// Gets the container to resize when resizing a tiling window.
+  ///
+  /// Walks up the ancestor chain to find the first split container
+  /// whose tiling direction matches the requested resize axis.
+  /// Returns `None` if no suitable ancestor is found (e.g. the
+  /// window is the only tiling child of the workspace).
   fn container_to_resize(
     &self,
     is_width_resize: bool,
   ) -> anyhow::Result<Option<TilingContainer>> {
-    let parent = self.direction_container().context("No parent.")?;
-
-    let tiling_direction = parent.tiling_direction();
-
-    // Whether the resize is in the inverse of its tiling direction.
-    let is_inverse_resize = match tiling_direction {
-      TilingDirection::Horizontal => !is_width_resize,
-      TilingDirection::Vertical => is_width_resize,
+    let target_direction = if is_width_resize {
+      TilingDirection::Horizontal
+    } else {
+      TilingDirection::Vertical
     };
 
-    let container_to_resize = if is_inverse_resize {
-      match parent {
-        // Prevent workspaces from being resized.
-        DirectionContainer::Split(parent) => Some(parent.into()),
-        DirectionContainer::Workspace(_) => None,
-      }
-    } else {
-      let grandparent = parent.parent().context("No grandparent.")?;
+    // Walk up from self, looking for the first ancestor whose
+    // parent splits in the target direction.
+    let mut candidate: Container = self.as_container();
+    loop {
+      let parent =
+        candidate.direction_container().context("No parent.")?;
 
-      if self.tiling_siblings().count() > 0 {
-        // Window can only be resized if it has siblings.
-        Some(self.as_tiling_container()?)
-      } else {
-        // Resize grandparent in layouts like H[1 V[2 H[3]]], where
-        // container 3 is resized horizontally.
-        match grandparent {
-          Container::Split(grandparent) => Some(grandparent.into()),
-          _ => None,
+      match parent {
+        DirectionContainer::Workspace(_) => return Ok(None),
+        DirectionContainer::Split(ref split) => {
+          if parent.tiling_direction() == target_direction {
+            // This parent splits in the right direction —
+            // resize the candidate (child of this parent).
+            return Ok(candidate.as_tiling_container().ok());
+          }
+          candidate = split.clone().into();
         }
       }
-    };
-
-    Ok(container_to_resize)
+    }
   }
 }
 

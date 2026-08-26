@@ -1,18 +1,19 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::WindowState;
 
 use crate::{
   commands::{
     container::{move_container_within_tree, set_focused_descendant},
+    window::dwindle_insertion_target,
     workspace::activate_workspace,
   },
-  models::{WindowContainer, WorkspaceTarget},
+  models::{Container, WindowContainer, WorkspaceTarget},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
 
+#[allow(clippy::too_many_lines)]
 pub fn move_window_to_workspace(
   window: WindowContainer,
   target: WorkspaceTarget,
@@ -62,11 +63,17 @@ pub fn move_window_to_workspace(
 
     // Update floating placement if the window has to cross monitors.
     if target_monitor.id() != current_monitor.id() {
-      window.set_floating_placement(
-        window
-          .floating_placement()
-          .translate_to_center(&target_workspace.to_rect()?),
-      );
+      let max_workspace_rect = target_workspace.max_workspace_rect()?;
+
+      let clamped_placement = window
+        .floating_placement()
+        .clamp_size(
+          (max_workspace_rect.width() - 10).max(100),
+          (max_workspace_rect.height() - 10).max(100),
+        )
+        .translate_to_center(&target_workspace.to_rect()?);
+
+      window.set_floating_placement(clamped_placement);
     }
 
     if let WindowContainer::NonTilingWindow(window) = &window {
@@ -79,22 +86,26 @@ pub fn move_window_to_workspace(
     let focus_reset_target = if target_workspace.is_displayed() {
       None
     } else {
-      target_monitor.descendant_focus_order().next()
+      target_monitor.displayed_workspace()
     };
 
     let insertion_sibling = target_workspace
       .descendant_focus_order()
-      .filter_map(|descendant| descendant.as_window_container().ok())
-      .find(|descendant| descendant.state() == WindowState::Tiling);
+      .find(Container::is_tiling_window);
 
     // Insert the window into the target workspace.
     match (window.is_tiling_window(), insertion_sibling.is_some()) {
       (true, true) => {
         if let Some(insertion_sibling) = insertion_sibling {
+          let (target_parent, target_index) = dwindle_insertion_target(
+            &insertion_sibling,
+            &config.value.gaps,
+          );
+
           move_container_within_tree(
             &window.clone().into(),
-            &insertion_sibling.clone().parent().context("No parent.")?,
-            insertion_sibling.index() + 1,
+            &target_parent,
+            target_index,
             state,
           )?;
         }
@@ -116,7 +127,7 @@ pub fn move_window_to_workspace(
     // on that monitor.
     if let Some(focus_reset_target) = focus_reset_target {
       set_focused_descendant(
-        &focus_reset_target,
+        &focus_reset_target.into(),
         Some(&target_monitor.into()),
       );
     }
