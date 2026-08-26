@@ -1,7 +1,5 @@
 <div align="center">
 
-  <img src="./resources/assets/logo.svg" width="200" alt="LoneWM logo" />
-
 # LoneWM
 
 A tiling window manager for Windows inspired by i3wm, bspwm, and Hyprland.
@@ -69,17 +67,13 @@ cargo test --workspace --tests
 ```
 
 Built executables are located in `target/release/`:
-* `lonewm.exe` — Core window manager
-* `lonewm-cli.exe` — CLI IPC client
-* `lonewm-watcher.exe` — Crash-recovery watchdog
+* `lonewm.exe`: Core window manager
+* `lonewm-cli.exe`: CLI IPC client
+* `lonewm-watcher.exe`: Crash-recovery watchdog
 
 ---
 
 ## Default Keybindings
-
-Below is a cheat sheet of default keybindings:
-
-![Infographic](/resources/assets/cheatsheet.png)
 
 | Shortcut | Command | Action |
 | --- | --- | --- |

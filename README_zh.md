@@ -1,7 +1,5 @@
 <div align="center">
 
-  <img src="./resources/assets/logo.svg" width="200" alt="LoneWM logo" />
-
 # LoneWM
 
 一个受 i3wm、bspwm 和 Hyprland 启发的高效、稳定的 Windows 平铺窗口管理器。
@@ -70,19 +68,15 @@ cargo test --workspace --tests
 ```
 
 编译出的可执行文件位于 `target/release/`：
-* `lonewm.exe` — 核心窗口管理器
-* `lonewm-cli.exe` — CLI IPC 客户端
-* `lonewm-watcher.exe` — 崩溃恢复监控守护进程
+* `lonewm.exe`: 核心窗口管理器
+* `lonewm-cli.exe`: CLI IPC 客户端
+* `lonewm-watcher.exe`: 崩溃恢复监控守护进程
 
 ---
 
 ## 默认快捷键
 
 在 LoneWM 首次启动时，会自动生成默认配置。
-
-以下是默认快捷键速查表：
-
-![Infographic](/resources/assets/cheatsheet_cn_ZH.png)
 
 | 快捷键 | 命令 | 操作 |
 | --- | --- | --- |
