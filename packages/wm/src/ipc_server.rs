@@ -3,6 +3,7 @@ use std::{iter, net::SocketAddr};
 use anyhow::{bail, Context};
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
   net::{TcpListener, TcpStream},
   sync::{broadcast, mpsc},
@@ -39,14 +40,24 @@ pub struct IpcServer {
 }
 
 impl IpcServer {
-  pub async fn start() -> anyhow::Result<Self> {
+  pub fn start() -> anyhow::Result<Self> {
     let (message_tx, message_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = broadcast::channel(16);
     let (unsubscribe_tx, _unsubscribe_rx) = broadcast::channel(16);
 
-    let server_addr = format!("127.0.0.1:{DEFAULT_IPC_PORT}");
-    let server = TcpListener::bind(server_addr.clone()).await?;
-    info!("IPC server started on: '{}'.", server_addr);
+    let server_addr_str = format!("127.0.0.1:{DEFAULT_IPC_PORT}");
+    let server_addr: SocketAddr = server_addr_str.parse()?;
+
+    let socket =
+      Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&server_addr.into())?;
+    socket.listen(1024)?;
+
+    let std_listener: std::net::TcpListener = socket.into();
+    let server = TcpListener::from_std(std_listener)?;
+    info!("IPC server started on: '{}'.", server_addr_str);
 
     let task = task::spawn(async move {
       while let Ok((stream, addr)) = server.accept().await {

@@ -41,6 +41,10 @@ async fn main() -> anyhow::Result<()> {
         managed_handles.into_iter().map(NativeWindow::from_handle);
 
       for window in managed_windows {
+        // Uncloak the window in case it was cloaked by the WM when it
+        // crashed. `show()` alone does not clear the cloak.
+        let _ = window.set_cloaked(false);
+
         if let Err(err) = window.show() {
           tracing::warn!("Failed to show window: {:?}", err);
         }

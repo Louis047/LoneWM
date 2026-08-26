@@ -9,9 +9,7 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![feature(iterator_try_collect)]
 
-#[cfg(target_os = "macos")]
-use std::io::IsTerminal;
-use std::{env, path::PathBuf, process, time::Duration};
+use std::{env, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Error};
 use tokio::{process::Command, signal};
@@ -21,8 +19,6 @@ use tracing_subscriber::{
   layer::SubscriberExt,
 };
 use wm_common::{AppCommand, InvokeCommand, Verbosity, WmEvent};
-#[cfg(target_os = "macos")]
-use wm_platform::DispatcherExtMacOs;
 use wm_platform::{
   Dispatcher, DisplayListener, EventLoop, KeybindingListener,
   MouseEventKind, MouseListener, PlatformEvent, SingleInstance,
@@ -65,6 +61,14 @@ fn main() -> anyhow::Result<()> {
     let (event_loop, dispatcher) = EventLoop::new()?;
 
     let task_handle = std::thread::spawn(move || {
+      struct EventLoopGuard(Dispatcher);
+      impl Drop for EventLoopGuard {
+        fn drop(&mut self) {
+          let _ = self.0.stop_event_loop();
+        }
+      }
+      let _guard = EventLoopGuard(dispatcher.clone());
+
       rt.block_on(async {
         let start_res =
           start_wm(config_path, verbosity, &dispatcher).await;
@@ -76,19 +80,12 @@ fn main() -> anyhow::Result<()> {
           dispatcher.show_error_dialog("Fatal error", &err.to_string());
         }
 
-        if let Err(err) = dispatcher.stop_event_loop() {
-          // Forcefully exit the process to ensure the event loop is
-          // stopped.
-          tracing::error!("Failed to stop event loop gracefully: {}", err);
-          process::exit(1);
-        }
-
         start_res
       })
     });
 
-    // Run event loop (blocks until shutdown). This must be on the main
-    // thread for macOS compatibility.
+    // Run event loop (blocks until shutdown). This stays on the main
+    // thread.
     event_loop.run()?;
 
     // Wait for clean exit of the WM.
@@ -110,16 +107,6 @@ async fn start_wm(
   // Ensure that only one instance of the WM is running.
   let _single_instance = SingleInstance::new()?;
 
-  #[cfg(target_os = "macos")]
-  {
-    if !dispatcher.has_ax_permission(true) {
-      anyhow::bail!(
-        "Accessibility permissions are not granted. In System Preferences, \
-         go to Privacy & Security > Accessibility and enable GlazeWM."
-      );
-    }
-  }
-
   // Parse and validate user config.
   let mut config = UserConfig::new(config_path)?;
 
@@ -128,11 +115,9 @@ async fn start_wm(
 
   let mut wm = WindowManager::new(&mut config, dispatcher.clone())?;
 
-  let mut ipc_server = IpcServer::start().await?;
+  let mut ipc_server = IpcServer::start()?;
 
-  // On Windows, start watcher process for restoring hidden windows on
-  // crash. macOS' hidden windows are always accessible.
-  #[cfg(target_os = "windows")]
+  // Start watcher process for restoring hidden windows on crash.
   if let Err(err) = start_watcher_process() {
     tracing::warn!(
       "Failed to start watcher process: {err}{}",
@@ -142,16 +127,9 @@ async fn start_wm(
     );
   }
 
-  // On macOS, update the current process' PATH variable so that
-  // `shell-exec` can resolve programs defined in the shell's PATH. Skip if
-  // running via a terminal.
-  #[cfg(target_os = "macos")]
-  if !std::io::stdin().is_terminal() {
-    update_path_env();
-  }
-
   // Start listening for platform events after populating initial state.
-  let mut window_listener = WindowListener::new(dispatcher)?;
+  let mut window_listener =
+    WindowListener::new(wm.state.managed_window_ids(), dispatcher)?;
   let mut display_listener = DisplayListener::new(dispatcher)?;
   let mut mouse_listener = MouseListener::new(
     if config.value.general.focus_follows_cursor {
@@ -218,7 +196,21 @@ async fn start_wm(
         if wm.state.is_paused {
           Ok(())
         } else {
-          wm.state.cleanup_invalid_windows()
+          wm.state.cleanup_invalid_windows()?;
+
+          // Retry display reconciliation if it previously failed (e.g.
+          // when a monitor was connected but not yet enumerable).
+          if wm.state.needs_display_resync {
+            tracing::info!("Retrying display reconciliation.");
+
+            wm.state.needs_display_resync = false;
+            wm.process_event(
+              PlatformEvent::DisplaySettingsChanged,
+              &mut config,
+            )
+          } else {
+            Ok(())
+          }
         }
       },
       Some((
@@ -257,7 +249,10 @@ async fn start_wm(
         ) {
           keybinding_listener.update(
             &config
-              .active_keybinding_configs(&wm.state.binding_modes, false)
+              .active_keybinding_configs(
+                &wm.state.binding_modes,
+                wm.state.is_paused,
+              )
               .flat_map(|kb| kb.bindings)
               .collect::<Vec<_>>(),
           );
@@ -300,11 +295,11 @@ async fn start_wm(
 
 /// Initialize logging with the specified verbosity level.
 ///
-/// Error logs are saved to `~/.glzr/glazewm/errors.log`.
+/// Error logs are saved to `~/.lonewm/errors.log`.
 fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
   let error_log_dir = home::home_dir()
     .context("Unable to get home directory.")?
-    .join(".glzr/glazewm/");
+    .join(".lonewm");
 
   let error_writer =
     tracing_appender::rolling::never(error_log_dir, "errors.log");
@@ -343,43 +338,9 @@ fn start_watcher_process() -> anyhow::Result<tokio::process::Child, Error>
   let watcher_path = env::current_exe()?
     .parent()
     .context("Failed to resolve path to the watcher process.")?
-    .join("glazewm-watcher");
+    .join("lonewm-watcher");
 
   Command::new(&watcher_path)
     .spawn()
     .context("Failed to start watcher process.")
-}
-
-/// Updates the current process' PATH by querying the login shell.
-///
-/// Apps launched outside a terminal (Spotlight, Finder, login items)
-/// inherit a PATH that only contains `/usr/bin:/bin:/usr/sbin:/sbin`. This
-/// causes `shell-exec` to fail for binaries that aren't in the system
-/// PATH.
-#[cfg(target_os = "macos")]
-fn update_path_env() {
-  let shell =
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-
-  // Use `-l` and `-i` (login + interactive) so that both profile and rc
-  // files are sourced.
-  let path_var = match std::process::Command::new(&shell)
-    .args(["-lic", "printf '%s' \"$PATH\""])
-    .output()
-  {
-    Ok(output) if output.status.success() => {
-      String::from_utf8(output.stdout)
-        .ok()
-        .filter(|path| !path.is_empty())
-    }
-    _ => None,
-  };
-
-  if let Some(path) = path_var {
-    std::env::set_var("PATH", path);
-  } else {
-    tracing::warn!(
-      "Failed to query login shell for PATH. Keeping existing PATH."
-    );
-  }
 }

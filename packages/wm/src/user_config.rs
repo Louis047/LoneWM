@@ -37,11 +37,11 @@ impl UserConfig {
   ///
   /// Creates a new config file from sample if it doesn't exist.
   pub fn new(config_path: Option<PathBuf>) -> anyhow::Result<Self> {
-    let default_config_path = home::home_dir()
-      .context("Unable to get home directory.")?
-      .join(".glzr/glazewm/config.yaml");
+    let default_config_path = default_config_path()?;
 
     let config_path = config_path
+      .or_else(|| env::var("LONEWM_CONFIG_PATH").ok().map(PathBuf::from))
+      // Legacy GlazeWM env var, kept for migrating users.
       .or_else(|| env::var("GLAZEWM_CONFIG_PATH").ok().map(PathBuf::from))
       .unwrap_or(default_config_path);
 
@@ -55,6 +55,22 @@ impl UserConfig {
       value_str: config_str,
       window_rules_by_event,
     })
+  }
+
+  /// Creates a mock instance of `UserConfig` from the embedded sample
+  /// configuration.
+  #[cfg(test)]
+  pub fn mock() -> Self {
+    let config_str = SAMPLE_CONFIG.to_string();
+    let config_value = serde_yaml::from_str(&config_str).unwrap();
+    let window_rules_by_event = Self::window_rules_by_event(&config_value);
+
+    Self {
+      path: PathBuf::from("mock_config.yaml"),
+      value: config_value,
+      value_str: config_str,
+      window_rules_by_event,
+    }
   }
 
   /// Reads and validates the user config from the given path.
@@ -83,7 +99,7 @@ impl UserConfig {
       config_path.parent().context("Invalid config path.")?;
 
     fs::create_dir_all(parent_dir).with_context(|| {
-      format!("Unable to create directory {}.", &config_path.display())
+      format!("Unable to create directory {}.", config_path.display())
     })?;
 
     fs::write(config_path, SAMPLE_CONFIG).with_context(|| {
@@ -225,7 +241,6 @@ impl UserConfig {
     event: &WindowRuleEvent,
   ) -> Vec<WindowRuleConfig> {
     let window_title = window.native_properties().title;
-    #[cfg(target_os = "windows")]
     let window_class = window.native_properties().class_name;
     let window_process = window.native_properties().process_name;
 
@@ -245,30 +260,12 @@ impl UserConfig {
           let is_process_match = match_config
             .window_process
             .as_ref()
-            .is_none_or(|match_type| {
-              // TODO: Temp fix for matching Zebar on both platforms with
-              // the same process name. Consider using lowercase for every
-              // `equals` match type.
-              if window_process == "Zebar" {
-                match_type.is_match("Zebar")
-                  || match_type.is_match("zebar")
-              } else {
-                match_type.is_match(&window_process)
-              }
-            });
+            .is_none_or(|match_type| match_type.is_match(&window_process));
 
-          let is_class_match = {
-            #[cfg(target_os = "windows")]
-            {
-              match_config.window_class.as_ref().is_none_or(|match_type| {
-                match_type.is_match(&window_class)
-              })
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-              match_config.window_class.is_none()
-            }
-          };
+          let is_class_match = match_config
+            .window_class
+            .as_ref()
+            .is_none_or(|match_type| match_type.is_match(&window_class));
 
           let is_title_match = match_config
             .window_title
@@ -377,4 +374,23 @@ impl UserConfig {
       }
     })
   }
+}
+
+/// Gets the default config path: `%userprofile%/.lonewm/config.yaml`.
+///
+/// Falls back to the legacy `GlazeWM` path (`.glzr/glazewm/config.yaml`)
+/// when it exists and the `LoneWM` path does not, so migrating users keep
+/// their config.
+fn default_config_path() -> anyhow::Result<PathBuf> {
+  let home_dir =
+    home::home_dir().context("Unable to get home directory.")?;
+
+  let lonewm_path = home_dir.join(".lonewm/config.yaml");
+  let legacy_path = home_dir.join(".glzr/glazewm/config.yaml");
+
+  if !lonewm_path.exists() && legacy_path.exists() {
+    return Ok(legacy_path);
+  }
+
+  Ok(lonewm_path)
 }
