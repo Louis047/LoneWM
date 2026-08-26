@@ -1,6 +1,6 @@
-# Contributing to GlazeWM
+# Contributing to LoneWM
 
-Thanks for your interest in improving GlazeWM 💛
+Thanks for your interest in improving LoneWM 💛
 
 There are fundamentally three ways to contribute:
 
@@ -10,18 +10,18 @@ There are fundamentally three ways to contribute:
 
 3. **Submitting PRs**: Submit a PR that fixes a bug or implements a feature.
 
-The [#glazewm-dev channel ⚡](https://discord.com/invite/ud6z3qjRvM) is also available for any concerns not covered in this guide, please join us!
+The [#lonewm-dev channel ⚡](https://discord.com/invite/ud6z3qjRvM) is also available for any concerns not covered in this guide, please join us!
 
 ## Pull requests & dev workflow
 
-For PRs, a good place to start are the issues marked as [`good first issue`](https://github.com/glzr-io/glazewm/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/glzr-io/glazewm/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22). PR's don't have a requirement to have a corresponding issue, but if there is one already, please drop a comment in the issue and we can assign it to you.
+For PRs, a good place to start are the issues marked as [`good first issue`](https://github.com/Louis047/LoneWM/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/Louis047/LoneWM/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22). PR's don't have a requirement to have a corresponding issue, but if there is one already, please drop a comment in the issue and we can assign it to you.
 
 ### Setup
 
 First fork, then clone the repo:
 
 ```shell
-git clone git@github.com:your-username/glazewm.git
+git clone git@github.com:your-username/lonewm.git
 ```
 
 If not already installed, [install Rust](https://rustup.rs/), then run:
@@ -32,7 +32,7 @@ If not already installed, [install Rust](https://rustup.rs/), then run:
 cargo build && cargo run
 ```
 
-After making your changes, push to your fork and [submit a pull request](https://github.com/glzr-io/zebar/pulls) against the `main` branch. Please try to address only a single feature or fix in the PR so that it's easy to review.
+After making your changes, push to your fork and [submit a pull request](https://github.com/Louis047/LoneWM/pulls) against the `main` branch. Please try to address only a single feature or fix in the PR so that it's easy to review.
 
 ### Tips
 
@@ -50,30 +50,30 @@ Knowledge of the entire codebase should never be required to make changes. The f
 
 ### Crates
 
-GlazeWM is organized into several Rust crates:
+LoneWM is organized into several Rust crates:
 
 - `wm` (bin): Main application, which implements the core window management logic.
-  - Gets installed to `C:\Program Files\glzr.io\glazewm.exe`.
+  - Gets installed to `C:\Program Files\LoneWM\lonewm.exe`.
 - `wm-cli` (bin/lib): CLI for interacting with the main application.
-  - Gets installed to `C:\Program Files\glzr.io\cli\glazewm.exe`. This is added to `$PATH` by default.
+  - Gets installed to `C:\Program Files\LoneWM\cli\lonewm.exe`. This is added to `$PATH` by default.
 - `wm-common` (lib): Shared types, utilities, and constants used across other crates.
 - `wm-ipc-client` (lib): WebSocket client library for IPC with the main application.
-- `wm-platform` (lib): Wrappers over platform-specific API's - other crates don't interact directly with the Windows and macOS API's.
+- `wm-platform` (lib): Wrappers over the Windows API - other crates don't interact directly with the Windows API.
 - `wm-watcher` (bin): Watchdog process that ensures proper cleanup when the main application exits.
-  - Gets installed to `C:\Program Files\glzr.io\glazewm-watcher.exe`.
+  - Gets installed to `C:\Program Files\LoneWM\lonewm-watcher.exe`.
 
 ### Commands & events
 
-GlazeWM uses a command-event architecture. The state of the WM (stored in [`WmState`](https://github.com/glzr-io/glazewm/blob/main/packages/wm/src/wm_state.rs)) is modified via [commands](https://github.com/glzr-io/glazewm/tree/main/packages/wm/src/commands) and [events](https://github.com/glzr-io/glazewm/tree/main/packages/wm/src/events).
+LoneWM uses a command-event architecture. The state of the WM (stored in [`WmState`](https://github.com/Louis047/LoneWM/blob/main/packages/wm/src/wm_state.rs)) is modified via [commands](https://github.com/Louis047/LoneWM/tree/main/packages/wm/src/commands) and [events](https://github.com/Louis047/LoneWM/tree/main/packages/wm/src/events).
 
 - Commands are run as a result of keybindings, IPC calls, the CLI (which calls IPC internally), or by being called from another command. Most commands are just for internal use and might not have a public-facing API.
 - Events arise from the Windows platform (e.g. a window being created, destroyed, focused, etc.). Each of these events have a handler that then modifies the WM state.
 
-Commands and events are processed in a loop in [`start_wm`](https://github.com/glzr-io/glazewm/blob/main/packages/wm/src/main.rs#L68).
+Commands and events are processed in a loop in [`start_wm`](https://github.com/Louis047/LoneWM/blob/main/packages/wm/src/main.rs#L68).
 
 ## Container tree
 
-Windows in GlazeWM are organized within a tree hierarchy with the following "container" types:
+Windows in LoneWM are organized within a tree hierarchy with the following "container" types:
 
 - Root
 - Monitors (physical displays)
