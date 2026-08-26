@@ -100,9 +100,8 @@ Built executables are located in `target/release/`:
 ### Configuration File Locations
 LoneWM discovers its configuration in the following order:
 1. `--config="..."` CLI argument (e.g. `lonewm.exe start --config="C:\path\to\config.yaml"`)
-2. `LONEWM_CONFIG_PATH` environment variable (legacy `GLAZEWM_CONFIG_PATH` fallback)
+2. `LONEWM_CONFIG_PATH` environment variable
 3. `%USERPROFILE%\.lonewm\config.yaml`
-4. `%USERPROFILE%\.glzr\glazewm\config.yaml` (legacy fallback)
 
 If no config is found on startup, a default template is written to `%USERPROFILE%\.lonewm\config.yaml`.
 

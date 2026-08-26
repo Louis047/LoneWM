@@ -103,9 +103,8 @@ cargo test --workspace --tests
 ### 配置文件查找顺序
 LoneWM 按以下顺序查找配置文件：
 1. `--config="..."` CLI 参数（例如 `lonewm.exe start --config="C:\path\to\config.yaml"`）
-2. `LONEWM_CONFIG_PATH` 环境变量（支持兼容回退 `GLAZEWM_CONFIG_PATH`）
+2. `LONEWM_CONFIG_PATH` 环境变量
 3. `%USERPROFILE%\.lonewm\config.yaml`
-4. `%USERPROFILE%\.glzr\glazewm\config.yaml`（兼容旧路径）
 
 如果启动时未找到配置文件，则会自动在 `%USERPROFILE%\.lonewm\config.yaml` 生成默认模板。
 

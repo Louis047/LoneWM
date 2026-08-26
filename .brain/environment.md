@@ -70,21 +70,19 @@ plain `cargo test -p wm-platform` works — no `--test-threads=1` needed.
 
 ## Config & run
 
-- WM reads config from `--config` → `$GLAZEWM_CONFIG_PATH` →
-  `~/.glzr/glazewm/config.yaml` (auto-created from
+- WM reads config from `--config` → `$LONEWM_CONFIG_PATH` →
+  `~/.lonewm/config.yaml` (auto-created from
   `resources/assets/sample-config.yaml` on first run).
-- Running the WM replaces your current shell's window management — test in a
-  throwaway session or VM. `glazewm-watcher` must be built alongside
+- Running the WM replaces your current shell's window management: test in a
+  throwaway session or VM. `lonewm-watcher` must be built alongside
   (`cargo build -p wm-watcher`) or the watcher-start warning appears.
-- Logs: stdout (verbosity flags) + `~/.glzr/glazewm/errors.log` (ERROR only).
-- IPC: TCP WebSocket on `127.0.0.1:6123` — `glazewm-cli query windows` works
+- Logs: stdout (verbosity flags) + `~/.lonewm/errors.log` (ERROR only).
+- IPC: TCP WebSocket on `127.0.0.1:6123`: `lonewm-cli query windows` works
   against a running instance.
 
 ## Repo state notes
 
-- Two large uncommitted change sets sit on `main` (see `.brain/worklog.md`):
-  the Windows-stability overhaul and the Windows-only migration. Nothing has
-  been committed or pushed by the agent; commits await owner instruction.
-- `.zcode/plans/` exists in the repo for agent planning artifacts.
-- Upstream remote issues are tracked at `glzr-io/glazewm` (this fork's issue
+- Codebase is fully migrated to Windows-only, pure dwindle layout, and rebranded
+  to LoneWM.
+- Upstream remote issues are tracked from `glzr-io/glazewm` (fork issue
   knowledge lives in `.brain/worklog.md`).

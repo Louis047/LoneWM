@@ -10,8 +10,6 @@ There are fundamentally three ways to contribute:
 
 3. **Submitting PRs**: Submit a PR that fixes a bug or implements a feature.
 
-The [#lonewm-dev channel ⚡](https://discord.com/invite/ud6z3qjRvM) is also available for any concerns not covered in this guide, please join us!
-
 ## Pull requests & dev workflow
 
 For PRs, a good place to start are the issues marked as [`good first issue`](https://github.com/Louis047/LoneWM/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/Louis047/LoneWM/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22). PR's don't have a requirement to have a corresponding issue, but if there is one already, please drop a comment in the issue and we can assign it to you.
