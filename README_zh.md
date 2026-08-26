@@ -1,24 +1,22 @@
 <div align="center">
 
-  <br>
-  <img src="./resources/assets/logo.svg" width="230" alt="LoneWM logo" />
-  <br>
+  <img src="./resources/assets/logo.svg" width="200" alt="LoneWM logo" />
 
 # LoneWM
 
-**一个受 i3wm、bspwm 和 Hyprland 启发的动态、快速且极其稳定的 Windows 平铺窗口管理器。**
+一个受 i3wm、bspwm 和 Hyprland 启发的高效、稳定的 Windows 平铺窗口管理器。
+
+*在 AI 辅助下开发与维护。*
 
 [![Downloads][downloads-badge]][downloads-link]
 [![License: GPL-3.0][license-badge]][license-link]
 
-LoneWM 让您可以通过键盘驱动的工作流、平滑的螺旋（Dwindle）平铺以及极低延迟的输入响应自动组织和管理窗口。
-
-[主要特性](#-主要特性) •
-[安装](#-安装) •
-[从源码构建](#-从源码构建) •
-[默认快捷键](#-默认快捷键) •
-[配置文档](#-配置文档) •
-[常见问题](#-常见问题) •
+[主要特性](#主要特性) •
+[安装](#安装) •
+[从源码构建](#从源码构建) •
+[默认快捷键](#默认快捷键) •
+[配置说明](#配置说明) •
+[常见问题](#常见问题) •
 [贡献 ↗](https://github.com/Louis047/LoneWM/blob/main/CONTRIBUTING.md)
 
 ![Demo video][demo-video]
@@ -27,19 +25,19 @@ LoneWM 让您可以通过键盘驱动的工作流、平滑的螺旋（Dwindle）
 
 ---
 
-### 🌟 主要特性
+## 主要特性
 
-- **🌀 纯粹的 Dwindle 螺旋平铺布局：** 新窗口自动将当前聚焦的窗口按交替螺旋方式分割（`bspwm` / `Hyprland` 模型）并保持分割几何结构，支持 2D 空间即时交换。
-- **🛡️ 坚如磐石的 Windows 稳定性：** 修复了 30 多个上游问题，涵盖窗口遮蔽（Cloaking）、UWP/Electron 挂起保留、多显示器睡眠唤醒重连、任务栏缩略图焦点抢夺以及全屏/最大化状态机抖动。
-- **⚡ 高性能与超低延迟：** 独立的低延迟键盘钩子线程（基于 `GetAsyncKeyState`）、$O(1)$ 原生窗口索引以及源端 `WinEvent` 钩子事件过滤。
-- **🎨 Windows 11 视觉效果：** 原生彩色边框、亚克力/云母透明度、隐藏标题栏以及圆角控制。
-- **🪟 纯粹的 Windows 架构：** 100% Windows 原生设计，无跨平台抽象开销。
-- **🖥️ 多显示器支持：** 工作区显示器绑定、显示配置变更自适应以及 DPI 缩放。
-- **🔌 WebSocket IPC：** 在 `127.0.0.1:6123` 上提供完整的 JSON-over-WebSocket IPC 服务，便于脚本调用和第三方状态栏集成。
+- **Dwindle 螺旋布局：** 新窗口自动将当前聚焦的窗口按交替螺旋方式分割，支持 2D 空间即时交换。
+- **专注于 Windows 稳定性：** 修复了多项上游问题，涵盖窗口遮蔽（Cloaking）、UWP/Electron 挂起保留、多显示器睡眠唤醒重连、任务栏缩略图焦点处理以及全屏状态机转换。
+- **低延迟输入：** 独立的低延迟键盘钩子线程（基于 `GetAsyncKeyState`）、哈希索引原生窗口查找以及源端 `WinEvent` 过滤。
+- **Windows 11 视觉效果：** 原生彩色边框、亚克力/云母透明度、隐藏标题栏以及圆角控制。
+- **Windows 原生架构：** 专为 Windows 打造，无跨平台抽象层开销。
+- **多显示器支持：** 工作区显示器绑定、显示拓扑变更自适应以及 DPI 缩放支持。
+- **WebSocket IPC：** 在 `127.0.0.1:6123` 上提供 JSON-over-WebSocket IPC 服务，便于脚本调用和第三方状态栏集成。
 
 ---
 
-## 📦 安装
+## 安装
 
 **从 [GitHub Releases](https://github.com/Louis047/LoneWM/releases) 下载最新版本。**
 
@@ -48,7 +46,7 @@ LoneWM 让您可以通过键盘驱动的工作流、平滑的螺旋（Dwindle）
 
 ---
 
-## 🔨 从源码构建
+## 从源码构建
 
 LoneWM 使用 Rust **nightly** 工具链构建。在 Windows 上支持 GNU 工具链 (`mingw-w64`) 或 MSVC。
 
@@ -78,7 +76,7 @@ cargo test --workspace --tests
 
 ---
 
-## ⌨️ 默认快捷键
+## 默认快捷键
 
 在 LoneWM 首次启动时，会自动生成默认配置。
 
@@ -108,7 +106,7 @@ cargo test --workspace --tests
 
 ---
 
-## ⚙️ 配置文档
+## 配置说明
 
 ### 配置文件查找顺序
 LoneWM 按以下顺序查找配置文件：
@@ -329,13 +327,13 @@ keybindings:
 
 ---
 
-## ❓ 常见问题
+## 常见问题
 
 **问：如何开机自启动 LoneWM？**
 右键单击系统托盘中的 LoneWM 图标，然后勾选 **"Run on system startup"**（开机启动）。
 
 **问：LoneWM 中的平铺布局是如何工作的？**
-LoneWM 采用 **纯粹的 Dwindle** 自动二叉树螺旋布局（灵感来自 `bspwm` 和 `Hyprland`）。每次打开新窗口都会以 50/50 的比例按深度交替方向分割当前聚焦的窗口。朝指定方向移动窗口时，会直接与屏幕上的相邻窗口即时交换位置，绝不会破坏二叉树结构或导致窗口缩小时变形。
+LoneWM 采用 Dwindle 自动二叉树螺旋布局（灵感来自 `bspwm` 和 `Hyprland`）。每次打开新窗口都会以 50/50 的比例按深度交替方向分割当前聚焦的窗口。朝指定方向移动窗口时，会直接与屏幕上的相邻窗口即时交换位置。
 
 **问：为什么以管理员权限运行的窗口没有被平铺？**
 Windows 的用户界面特权隔离 (UIPI) 阻止普通权限进程移动、调整或聚焦提权窗口。官方签名的 LoneWM 安装程序包含 UIAccess 权限，可以直接管理提权窗口。对于未开启 UIAccess 的便携/本地构建版本，LoneWM 会自动忽略提权窗口以防止布局出现空位。若要在本地构建中管理提权窗口，请以管理员权限运行 LoneWM，或使用 `--features ui_access` 构建并对可执行文件进行数字签名。

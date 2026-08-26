@@ -1,24 +1,22 @@
 <div align="center">
 
-  <br>
-  <img src="./resources/assets/logo.svg" width="230" alt="LoneWM logo" />
-  <br>
+  <img src="./resources/assets/logo.svg" width="200" alt="LoneWM logo" />
 
 # LoneWM
 
-**A dynamic, fast, and rock-solid tiling window manager for Windows inspired by i3wm, bspwm, and Hyprland.**
+A tiling window manager for Windows inspired by i3wm, bspwm, and Hyprland.
+
+*Developed with AI assistance.*
 
 [![Downloads][downloads-badge]][downloads-link]
 [![License: GPL-3.0][license-badge]][license-link]
 
-LoneWM lets you organize and manage windows automatically with keyboard-driven workflows, smooth dwindle spiral tiling, and low-latency input handling.
-
-[Features](#-key-features) •
-[Installation](#-installation) •
-[Building from Source](#-building-from-source) •
-[Default Keybindings](#-default-keybindings) •
-[Config Documentation](#-config-documentation) •
-[FAQ](#-faq) •
+[Features](#features) •
+[Installation](#installation) •
+[Building from Source](#building-from-source) •
+[Default Keybindings](#default-keybindings) •
+[Configuration](#configuration) •
+[FAQ](#faq) •
 [Contributing ↗](https://github.com/Louis047/LoneWM/blob/main/CONTRIBUTING.md)
 
 ![Demo video][demo-video]
@@ -27,19 +25,18 @@ LoneWM lets you organize and manage windows automatically with keyboard-driven w
 
 ---
 
-### 🌟 Key Features
+## Features
 
-- **🌀 Pure Dwindle Tiling Layout:** New windows automatically split the focused window in an alternating spiral (`bspwm` / `Hyprland` model) with persistent split geometry and instant in-place spatial window swapping.
-- **🛡️ Rock-Solid Windows Stability:** 30+ upstream bug fixes covering cloaking, suspended UWP/Electron window retention, sleep/wake multi-monitor reconnects, taskbar preview focus stealing, and fullscreen/maximize state machine oscillations.
-- **⚡ High Performance & Low Latency:** Dedicated low-latency keyboard hook thread with `GetAsyncKeyState`, $O(1)$ native window indexing, and source-side `WinEvent` hook event filtering.
-- **🎨 Windows 11 Visual Effects:** Native colored borders, acrylic/mica transparency, title bar removal, and rounded corner styling.
-- **🪟 Pure Windows Architecture:** 100% Windows-native design with no cross-platform abstraction overhead.
-- **🖥️ Multi-Monitor Support:** Per-monitor workspace pinning, auto-reconciliation on display configuration changes, and DPI scaling.
-- **🔌 WebSocket IPC:** Full JSON-over-WebSocket IPC server on `127.0.0.1:6123` for scripting and third-party status bars.
+- **Dwindle Layout:** New windows split the currently focused window in an alternating spiral with spatial 2D window swapping.
+- **Windows Stability:** Dedicated handling for cloaking, suspended UWP/Electron apps, multi-monitor sleep/wake events, taskbar focus handling, and fullscreen transitions.
+- **Input & Event Handling:** Low-latency keyboard hook thread with `GetAsyncKeyState`, hash-indexed window lookups, and source-side event filtering.
+- **Windows 11 Visual Effects:** Configurable window borders, acrylic/mica transparency, title bar toggle, and corner styling via DWM APIs.
+- **Multi-Monitor Support:** Per-monitor workspace pinning, display change auto-reconciliation, and per-monitor DPI scaling.
+- **IPC Server:** JSON-over-WebSocket IPC server on `127.0.0.1:6123` for scripting and third-party status bar integration.
 
 ---
 
-## 📦 Installation
+## Installation
 
 **Download the latest version from [GitHub Releases](https://github.com/Louis047/LoneWM/releases).**
 
@@ -48,7 +45,7 @@ LoneWM lets you organize and manage windows automatically with keyboard-driven w
 
 ---
 
-## 🔨 Building from Source
+## Building from Source
 
 LoneWM uses the Rust **nightly** toolchain. On Windows, it builds with either GNU toolchain (`mingw-w64`) or MSVC.
 
@@ -78,7 +75,7 @@ Built executables are located in `target/release/`:
 
 ---
 
-## ⌨️ Default Keybindings
+## Default Keybindings
 
 Below is a cheat sheet of default keybindings:
 
@@ -106,7 +103,7 @@ Below is a cheat sheet of default keybindings:
 
 ---
 
-## ⚙️ Config Documentation
+## Configuration
 
 ### Configuration File Locations
 LoneWM discovers its configuration in the following order:
@@ -327,13 +324,13 @@ keybindings:
 
 ---
 
-## ❓ FAQ
+## FAQ
 
 **Q: How do I run LoneWM on startup?**
 Right-click the LoneWM system tray icon and check **"Run on system startup"**.
 
 **Q: How do layouts work in LoneWM?**
-LoneWM uses a **pure Dwindle** automatic binary tree layout (inspired by `bspwm` and `Hyprland`). Every new window splits the currently focused window 50/50 in an alternating direction (depth-parity spiral). Moving windows in a direction instantly swaps leaf positions with the adjacent window on screen with zero layout distortion.
+LoneWM uses a dwindle binary tree layout (inspired by `bspwm` and `Hyprland`). Every new window splits the currently focused window 50/50 in an alternating direction (depth-parity spiral). Moving windows in a direction swaps leaf positions with the adjacent window on screen.
 
 **Q: Why are windows running as Administrator (elevated) not tiled?**
 Windows UIPI blocks standard-integrity processes from repositioning or focusing elevated windows. The official signed LoneWM installer runs with UIAccess to manage elevated windows. For local/portable builds without UIAccess, LoneWM automatically ignores elevated windows to avoid phantom tiling slots. To manage elevated windows with a local build, run LoneWM as Administrator or build with `--features ui_access` and sign the binary.
