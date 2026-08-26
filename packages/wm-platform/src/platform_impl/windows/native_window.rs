@@ -1,19 +1,20 @@
-use std::time::Duration;
-
-use tokio::task;
-use tracing::warn;
 use windows::{
   core::PWSTR,
   Win32::{
-    Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
+    Foundation::{CloseHandle, BOOL, HANDLE, HWND, LPARAM, POINT, RECT},
     Graphics::Dwm::{
       DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
-      DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
+      DWMWA_CLOAKED, DWMWA_COLOR_DEFAULT, DWMWA_EXTENDED_FRAME_BOUNDS,
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
       DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
     },
+    Security::{
+      GetTokenInformation, TokenElevation, TokenUIAccess, TOKEN_ELEVATION,
+      TOKEN_QUERY,
+    },
     System::Threading::{
-      OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+      GetCurrentProcess, OpenProcess, OpenProcessToken,
+      QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
       PROCESS_QUERY_LIMITED_INFORMATION,
     },
     UI::{
@@ -28,15 +29,15 @@ use windows::{
         IsZoomed, SendNotifyMessageW, SetForegroundWindow,
         SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPlacement,
         SetWindowPos, ShowWindowAsync, WindowFromPoint, GA_ROOT,
-        GWL_EXSTYLE, GWL_STYLE, GW_OWNER, HWND_NOTOPMOST, HWND_TOP,
-        HWND_TOPMOST, LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA,
-        LWA_COLORKEY, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
+        GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, GW_OWNER, HWND_NOTOPMOST,
+        HWND_TOP, HWND_TOPMOST, LAYERED_WINDOW_ATTRIBUTES_FLAGS,
+        LWA_ALPHA, LWA_COLORKEY, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
         SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
         SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
         SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
         SW_SHOWNA, WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE,
         WM_CLOSE, WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
-        WS_THICKFRAME,
+        WS_EX_TOPMOST, WS_THICKFRAME,
       },
     },
   },
@@ -144,7 +145,9 @@ impl NativeWindow {
         rect.bottom,
       ))
     } else {
-      warn!("Failed to get window's frame position. Falling back to border position.");
+      tracing::debug!(
+        "Failed to get window's frame position. Falling back to border position."
+      );
       self.frame_with_shadows()
     }
   }
@@ -164,6 +167,37 @@ impl NativeWindow {
   /// Implements [`NativeWindow::is_valid`].
   pub(crate) fn is_valid(&self) -> bool {
     unsafe { IsWindow(self.hwnd()) }.as_bool()
+  }
+
+  /// Implements [`NativeWindowWindowsExt::is_shown`].
+  #[allow(clippy::unnecessary_wraps)]
+  pub(crate) fn is_shown(&self) -> crate::Result<bool> {
+    Ok(unsafe { IsWindowVisible(self.hwnd()) }.as_bool())
+  }
+
+  /// Implements [`NativeWindowWindowsExt::is_elevated`].
+  pub(crate) fn is_elevated(&self) -> crate::Result<bool> {
+    let mut process_id = 0u32;
+    unsafe {
+      GetWindowThreadProcessId(self.hwnd(), Some(&raw mut process_id));
+    }
+
+    let process_handle = unsafe {
+      OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id)
+    }?;
+
+    let is_elevated = is_elevated(&process_handle);
+
+    unsafe { CloseHandle(process_handle) }?;
+
+    is_elevated
+  }
+
+  /// Implements [`NativeWindowWindowsExt::has_owning_thread`].
+  pub(crate) fn has_owning_thread(&self) -> bool {
+    let thread_id = unsafe { GetWindowThreadProcessId(self.hwnd(), None) };
+
+    thread_id != 0
   }
 
   /// Implements [`NativeWindow::is_visible`].
@@ -283,6 +317,17 @@ impl NativeWindow {
 
   /// Implements [`NativeWindow::focus`].
   pub(crate) fn focus(&self) -> crate::Result<()> {
+    // Try setting the foreground window directly first, and only fall
+    // back to simulating an input event (which bypasses the foreground
+    // lock) if that fails. Synthetic input is observable system-wide
+    // (e.g. by remote input tools like Synergy/Barrier), so it should be
+    // avoided when possible.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/1019>
+    if unsafe { SetForegroundWindow(self.hwnd()) }.as_bool() {
+      return Ok(());
+    }
+
     let input = [INPUT {
       r#type: INPUT_MOUSE,
       Anonymous: INPUT_0 {
@@ -546,6 +591,13 @@ impl NativeWindow {
     &self,
     z_order: &WindowZOrder,
   ) -> crate::Result<()> {
+    // Skip no-op z-order updates: issuing `SetWindowPos` for an already
+    // correct order forces a frame repaint in some apps (e.g. JetBrains
+    // IDEs), which flickers.
+    if self.is_z_order_set(z_order) {
+      return Ok(());
+    }
+
     let z_order_hwnd = match z_order {
       WindowZOrder::TopMost => HWND_TOPMOST,
       WindowZOrder::Top => HWND_TOP,
@@ -553,8 +605,10 @@ impl NativeWindow {
       WindowZOrder::AfterWindow(window_id) => HWND(window_id.0),
     };
 
+    // NOTE: `SWP_NOCOPYBITS` is intentionally omitted — discarding the
+    // client area on a position/size-preserving update forces a full
+    // repaint.
     let flags = SWP_NOACTIVATE
-      | SWP_NOCOPYBITS
       | SWP_ASYNCWINDOWPOS
       | SWP_SHOWWINDOW
       | SWP_NOMOVE
@@ -562,16 +616,25 @@ impl NativeWindow {
 
     unsafe { SetWindowPos(self.hwnd(), z_order_hwnd, 0, 0, 0, 0, flags) }?;
 
-    // Z-order can sometimes still be incorrect after the above call.
-    let handle = self.handle;
-    task::spawn(async move {
-      tokio::time::sleep(Duration::from_millis(10)).await;
-      let _ = unsafe {
-        SetWindowPos(HWND(handle), z_order_hwnd, 0, 0, 0, 0, flags)
-      };
-    });
-
     Ok(())
+  }
+
+  /// Gets whether the window is already in the given z-order position.
+  fn is_z_order_set(&self, z_order: &WindowZOrder) -> bool {
+    match z_order {
+      WindowZOrder::TopMost => self.has_window_style_ex(WS_EX_TOPMOST),
+      WindowZOrder::Normal => !self.has_window_style_ex(WS_EX_TOPMOST),
+      WindowZOrder::AfterWindow(window_id) => {
+        // The window is directly after the target when the window above
+        // it (in z-order) is the target itself.
+        let window_above = unsafe { GetWindow(self.hwnd(), GW_HWNDPREV) };
+
+        window_above == HWND(window_id.0)
+      }
+      // Being at the very top of the non-topmost band is difficult to
+      // verify cheaply; always issue the update.
+      WindowZOrder::Top => false,
+    }
   }
 
   /// Implements [`NativeWindowWindowsExt::set_title_bar_visibility`].
@@ -614,14 +677,30 @@ impl NativeWindow {
     Ok(())
   }
 
+  /// Implements [`NativeWindowWindowsExt::get_border_color`].
+  pub(crate) fn get_border_color(&self) -> crate::Result<u32> {
+    let mut color = 0u32;
+    unsafe {
+      #[allow(clippy::cast_possible_truncation)]
+      DwmGetWindowAttribute(
+        self.hwnd(),
+        DWMWA_BORDER_COLOR,
+        std::ptr::from_mut(&mut color).cast(),
+        std::mem::size_of::<u32>() as u32,
+      )?;
+    }
+
+    Ok(color)
+  }
+
   /// Implements [`NativeWindowWindowsExt::set_border_color`].
   pub(crate) fn set_border_color(
     &self,
     color: Option<&Color>,
   ) -> crate::Result<()> {
-    let bgr = match color {
+    let target_bgr = match color {
       Some(color) => color.to_bgr(),
-      None => DWMWA_COLOR_NONE,
+      None => DWMWA_COLOR_DEFAULT,
     };
 
     unsafe {
@@ -629,12 +708,11 @@ impl NativeWindow {
       DwmSetWindowAttribute(
         self.hwnd(),
         DWMWA_BORDER_COLOR,
-        std::ptr::from_ref(&bgr).cast(),
+        std::ptr::from_ref(&target_bgr).cast(),
         std::mem::size_of::<u32>() as u32,
-      )?;
+      )
+      .map_err(Into::into)
     }
-
-    Ok(())
   }
 
   /// Implements [`NativeWindowWindowsExt::set_corner_style`].
@@ -667,6 +745,29 @@ impl NativeWindow {
     &self,
     opacity_value: &OpacityValue,
   ) -> crate::Result<()> {
+    // Skip redundant alpha updates: re-applying the same alpha forces
+    // DWM to re-evaluate composition, which visibly flickers backdrop
+    // materials (e.g. Acrylic/Mica).
+    let mut current_alpha = u8::MAX;
+    let mut current_flags = LAYERED_WINDOW_ATTRIBUTES_FLAGS::default();
+
+    let has_alpha = unsafe {
+      GetLayeredWindowAttributes(
+        self.hwnd(),
+        None,
+        Some(&raw mut current_alpha),
+        Some(&raw mut current_flags),
+      )
+    }
+    .is_ok();
+
+    if has_alpha
+      && current_flags.contains(LWA_ALPHA)
+      && current_alpha == opacity_value.to_alpha()
+    {
+      return Ok(());
+    }
+
     // Make the window layered if it isn't already.
     self.add_window_style_ex(WS_EX_LAYERED);
 
@@ -819,6 +920,80 @@ pub(crate) fn window_from_point(
 /// Implements [`Dispatcher::reset_focus`].
 pub(crate) fn reset_focus(_dispatcher: &Dispatcher) -> crate::Result<()> {
   desktop_window().focus()
+}
+
+/// Returns whether elevated windows can be managed by the current
+/// process.
+///
+/// This is the case when the process is elevated or has `UIAccess` (i.e.
+/// the signed installer build). Otherwise, attempts to move, resize or
+/// focus such windows are silently blocked by the OS.
+#[must_use]
+pub(crate) fn can_manage_elevated_windows() -> bool {
+  let process_handle = unsafe { GetCurrentProcess() };
+
+  is_elevated(&process_handle).unwrap_or(false)
+    || has_ui_access(&process_handle).unwrap_or(false)
+}
+
+/// Returns whether the process of the given handle is elevated.
+fn is_elevated(process_handle: &HANDLE) -> crate::Result<bool> {
+  let mut elevation = TOKEN_ELEVATION::default();
+  query_token_information(
+    process_handle,
+    TokenElevation,
+    (&raw mut elevation).cast::<u8>(),
+    std::mem::size_of::<TOKEN_ELEVATION>(),
+  )?;
+
+  Ok(elevation.TokenIsElevated != 0)
+}
+
+/// Returns whether the process of the given handle has `UIAccess`.
+fn has_ui_access(process_handle: &HANDLE) -> crate::Result<bool> {
+  let mut ui_access = 0u32;
+  query_token_information(
+    process_handle,
+    TokenUIAccess,
+    (&raw mut ui_access).cast::<u8>(),
+    std::mem::size_of::<u32>(),
+  )?;
+
+  Ok(ui_access != 0)
+}
+
+/// Queries the token of the given process handle for the given
+/// information class, writing into `buffer`.
+#[allow(clippy::cast_possible_truncation)]
+fn query_token_information(
+  process_handle: &HANDLE,
+  information_class: windows::Win32::Security::TOKEN_INFORMATION_CLASS,
+  buffer: *mut u8,
+  buffer_size: usize,
+) -> crate::Result<()> {
+  let mut token_handle = HANDLE::default();
+
+  unsafe {
+    OpenProcessToken(*process_handle, TOKEN_QUERY, &raw mut token_handle)
+  }?;
+
+  let mut return_length = 0u32;
+
+  let result = unsafe {
+    GetTokenInformation(
+      token_handle,
+      information_class,
+      Some(buffer.cast::<std::ffi::c_void>()),
+      buffer_size as u32,
+      &raw mut return_length,
+    )
+  };
+
+  unsafe { CloseHandle(token_handle) }?;
+
+  result?;
+
+  Ok(())
 }
 
 /// Gets the `NativeWindow` instance of the desktop window.

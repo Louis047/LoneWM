@@ -2,14 +2,16 @@ use std::cell::Cell;
 
 use windows::Win32::{
   Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
+  System::Threading::GetCurrentThreadId,
   UI::{
     Input::KeyboardAndMouse::{
-      GetKeyState, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL,
-      VK_RMENU, VK_RSHIFT, VK_RWIN,
+      GetAsyncKeyState, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+      VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
     },
     WindowsAndMessaging::{
-      CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK,
-      KBDLLHOOKSTRUCT, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
+      CallNextHookEx, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
+      UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
+      WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN,
     },
   },
 };
@@ -43,10 +45,15 @@ pub struct KeyEvent {
 
 impl KeyEvent {
   /// Gets whether the specified key is currently pressed.
+  ///
+  /// NOTE: `GetAsyncKeyState` is used rather than `GetKeyState` since the
+  /// hook runs on a dedicated thread that doesn't process window
+  /// messages. `GetKeyState` reflects the message queue state of the
+  /// calling thread, which can lag behind the physical keyboard state.
   #[allow(clippy::unused_self)]
   pub fn is_key_down(&self, key: Key) -> bool {
     match key {
-      Key::Cmd | Key::Win => {
+      Key::Win => {
         Self::is_key_down_raw(VK_LWIN.0)
           || Self::is_key_down_raw(VK_RWIN.0)
       }
@@ -74,72 +81,109 @@ impl KeyEvent {
 
   /// Gets whether the specified key is currently down using the raw key
   /// code.
+  ///
+  /// A key is down when the high-order bit of the returned state is set,
+  /// i.e. the state is negative.
   fn is_key_down_raw(key: u16) -> bool {
-    unsafe { (GetKeyState(key.into()) & 0x80) == 0x80 }
+    let state = unsafe { GetAsyncKeyState(key.into()) };
+    state < 0
   }
 }
 
 /// A system-wide low-level keyboard hook.
 #[derive(Debug)]
 pub struct KeyboardHook {
-  handle: HHOOK,
-  dispatcher: Dispatcher,
+  /// Thread ID of the dedicated hook thread.
+  thread_id: u32,
 }
 
 impl KeyboardHook {
   /// Creates an instance of `KeyboardHook`.
   ///
-  /// The callback is called for every keyboard event and returns `true` if
-  /// the event should be intercepted.
+  /// The callback is called for every keyboard event and returns `true`
+  /// if the event should be intercepted.
   ///
-  /// # Panics
-  ///
-  /// Panics when attempting to register multiple hooks on the dispatcher's
-  /// thread.
+  /// The hook is installed on a dedicated thread with its own message
+  /// loop, so that keyboard events are delivered promptly regardless of
+  /// how busy the shared event loop thread is (e.g. during window event
+  /// floods).
   pub fn new<F>(
     callback: F,
-    dispatcher: &Dispatcher,
+    _dispatcher: &Dispatcher,
   ) -> crate::Result<Self>
   where
     F: Fn(KeyEvent) -> bool + Send + Sync + 'static,
   {
-    let handle = dispatcher.dispatch_sync(move || {
-      HOOK.with(|state| {
-        assert!(
-          state.take().is_none(),
-          "Only one keyboard hook can be registered on the dispatcher's thread."
-        );
+    let (result_tx, result_rx): (
+      std::sync::mpsc::Sender<crate::Result<u32>>,
+      std::sync::mpsc::Receiver<crate::Result<u32>>,
+    ) = std::sync::mpsc::channel();
 
-        state.set(Some(Box::new(callback)));
-      });
+    std::thread::Builder::new()
+      .name("keyboard-hook".to_string())
+      .spawn(move || {
+        HOOK.with(|state| {
+          state.set(Some(Box::new(callback)));
+        });
 
-      unsafe {
-        SetWindowsHookExW(
-          WH_KEYBOARD_LL,
-          Some(Self::hook_proc),
-          HINSTANCE::default(),
-          0,
+        let handle = match unsafe {
+          SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(Self::hook_proc),
+            HINSTANCE::default(),
+            0,
+          )
+        } {
+          Ok(handle) => handle,
+          Err(err) => {
+            let _ = result_tx.send(Err(err.into()));
+            HOOK.with(Cell::take);
+            return;
+          }
+        };
+
+        let thread_id = unsafe { GetCurrentThreadId() };
+
+        if result_tx.send(Ok(thread_id)).is_err() {
+          // Receiver was dropped; clean up the hook.
+          let _ = unsafe { UnhookWindowsHookEx(handle) };
+          HOOK.with(Cell::take);
+          return;
+        }
+
+        // Low-level hook callbacks are delivered through this thread's
+        // message loop, so pump messages until a quit message is
+        // received.
+        let mut msg = MSG::default();
+        while unsafe { GetMessageW(&raw mut msg, None, 0, 0) }.as_bool() {
+          // No window to dispatch messages to.
+        }
+
+        let _ = unsafe { UnhookWindowsHookEx(handle) };
+        HOOK.with(Cell::take);
+      })
+      .map_err(|_| {
+        crate::Error::Platform(
+          "Failed to spawn keyboard hook thread.".to_string(),
         )
-      }
+      })?;
+
+    let thread_id = result_rx.recv().map_err(|_| {
+      crate::Error::Platform(
+        "Keyboard hook thread failed to start.".to_string(),
+      )
     })??;
 
-    Ok(Self {
-      handle,
-      dispatcher: dispatcher.clone(),
-    })
+    Ok(Self { thread_id })
   }
 
   /// Terminates the keyboard hook by unregistering it.
   pub fn terminate(&mut self) -> crate::Result<()> {
-    unsafe { UnhookWindowsHookEx(self.handle) }?;
-
-    // Dispatch cleanup to the event loop thread since the callback
-    // is stored in a thread-local on that thread.
-    let _ = self.dispatcher.dispatch_async(|| {
-      HOOK.with(|state| {
-        state.take();
-      });
-    });
+    // Stop the hook thread's message loop. The thread unhooks and
+    // cleans up its state on exit.
+    unsafe {
+      PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0))
+    }?;
 
     Ok(())
   }

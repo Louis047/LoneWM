@@ -34,10 +34,20 @@ pub use single_instance::*;
 pub use thread_bound::*;
 pub use window_listener::*;
 // TODO: Avoid exposing `windows` crate types in the public API.
-#[cfg(target_os = "windows")]
 pub use windows::Win32::UI::WindowsAndMessaging::{
   SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
   SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, WINDOW_EX_STYLE,
   WINDOW_STYLE, WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
   WS_MAXIMIZEBOX,
 };
+
+/// Returns whether windows of elevated (admin) processes can be managed
+/// by the current process.
+///
+/// This is the case when the process is elevated or has `UIAccess` (i.e.
+/// the signed installer build). Otherwise, attempts to move, resize or
+/// focus such windows are silently blocked by the OS.
+#[must_use]
+pub fn can_manage_elevated_windows() -> bool {
+  platform_impl::can_manage_elevated_windows()
+}

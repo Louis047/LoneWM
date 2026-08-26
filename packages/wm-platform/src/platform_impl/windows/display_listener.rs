@@ -6,9 +6,9 @@ use std::sync::{
 use tokio::sync::mpsc;
 use tracing::warn;
 use windows::Win32::UI::WindowsAndMessaging::{
-  DBT_DEVNODES_CHANGED, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND,
-  PBT_APMSUSPEND, SPI_SETWORKAREA, WM_DEVICECHANGE, WM_DISPLAYCHANGE,
-  WM_POWERBROADCAST, WM_SETTINGCHANGE,
+  DBT_DEVNODES_CHANGED, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL,
+  PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, SPI_SETWORKAREA, WM_DEVICECHANGE,
+  WM_DISPLAYCHANGE, WM_POWERBROADCAST, WM_SETTINGCHANGE,
 };
 
 use crate::{Dispatcher, DispatcherExtWindows};
@@ -34,8 +34,17 @@ impl DisplayListener {
             #[allow(clippy::cast_possible_truncation)]
             match wparam as u32 {
               // System is resuming from sleep/hibernation.
-              PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND => {
+              //
+              // Display change events fired while suspended are ignored
+              // below, so emit an event on resume to reconcile monitor
+              // state (monitors are often re-enumerated during wake).
+              //
+              // See: <https://github.com/glzr-io/glazewm/issues/1381>
+              PBT_APMRESUMEAUTOMATIC
+              | PBT_APMRESUMESUSPEND
+              | PBT_APMRESUMECRITICAL => {
                 is_system_suspended.store(false, Ordering::Relaxed);
+                let _ = event_tx.send(());
               }
               // System is entering sleep/hibernation.
               PBT_APMSUSPEND => {

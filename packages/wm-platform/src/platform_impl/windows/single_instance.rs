@@ -2,8 +2,7 @@ use windows::{
   core::{w, PCWSTR},
   Win32::{
     Foundation::{
-      CloseHandle, GetLastError, ERROR_ALREADY_EXISTS,
-      ERROR_FILE_NOT_FOUND, HANDLE,
+      CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE,
     },
     System::Threading::{
       CreateMutexW, OpenMutexW, ReleaseMutex,
@@ -29,6 +28,10 @@ impl SingleInstance {
 
     if let Err(err) = unsafe { GetLastError() } {
       if err == ERROR_ALREADY_EXISTS.into() {
+        unsafe {
+          let _ = CloseHandle(handle);
+        }
+
         return Err(crate::Error::Platform(
           "Another instance of the application is already running."
             .to_string(),
@@ -48,8 +51,13 @@ impl SingleInstance {
 
     // If the mutex exists, then another instance is running.
     match res {
-      Ok(_) => false,
-      Err(err) => err == ERROR_FILE_NOT_FOUND.into(),
+      Ok(handle) => {
+        unsafe {
+          let _ = CloseHandle(handle);
+        }
+        true
+      }
+      Err(_) => false,
     }
   }
 }

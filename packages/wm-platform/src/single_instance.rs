@@ -1,11 +1,6 @@
 use crate::platform_impl;
 
 /// Ensures only one instance of the application is running at a time.
-///
-/// # Platform-specific
-///
-/// - **Windows**: Uses a named system-wide mutex.
-/// - **macOS**: Uses an exclusive file lock.
 pub struct SingleInstance {
   /// Inner platform-specific single instance implementation.
   _inner: platform_impl::SingleInstance,

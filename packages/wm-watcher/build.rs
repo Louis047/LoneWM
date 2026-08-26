@@ -1,10 +1,6 @@
 use tauri_winres::VersionInfo;
 
 fn main() {
-  if cfg!(not(target_os = "windows")) {
-    panic!("wm-watcher is only supported on Windows.");
-  }
-
   println!("cargo:rerun-if-env-changed=VERSION_NUMBER");
   let mut res = tauri_winres::WindowsResource::new();
 
@@ -13,9 +9,9 @@ fn main() {
   // Set language to English (US).
   res.set_language(0x0409);
 
-  res.set("OriginalFilename", "glazewm-watcher.exe");
-  res.set("ProductName", "GlazeWM Watcher");
-  res.set("FileDescription", "GlazeWM Watcher");
+  res.set("OriginalFilename", "lonewm-watcher.exe");
+  res.set("ProductName", "LoneWM Watcher");
+  res.set("FileDescription", "LoneWM Watcher");
 
   let version_parts = env!("VERSION_NUMBER")
     .split('.')

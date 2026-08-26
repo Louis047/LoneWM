@@ -12,25 +12,16 @@ use crate::{
   platform_event::KeybindingEvent, platform_impl, Dispatcher, Key,
 };
 
+/// Keys in the Win modifier group.
+const WIN_KEYS: &[Key] = &[Key::Win, Key::LWin, Key::RWin];
+
 /// Modifier key groups, where each entry maps a generic key (e.g.
 /// `Key::Shift`) to all its variants (e.g. `Key::LShift`, `Key::RShift`).
-///
-/// `Cmd` and `Win` are treated as aliases within the same group.
 const MODIFIER_GROUPS: &[(Key, &[Key])] = &[
   (Key::Shift, &[Key::Shift, Key::LShift, Key::RShift]),
   (Key::Ctrl, &[Key::Ctrl, Key::LCtrl, Key::RCtrl]),
   (Key::Alt, &[Key::Alt, Key::LAlt, Key::RAlt]),
-  (
-    Key::Win,
-    &[
-      Key::Win,
-      Key::LWin,
-      Key::RWin,
-      Key::Cmd,
-      Key::LCmd,
-      Key::RCmd,
-    ],
-  ),
+  (Key::Win, WIN_KEYS),
 ];
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -75,7 +66,7 @@ pub struct KeybindingListener {
   /// A map of keybindings to their trigger key.
   ///
   /// The trigger key is the final key in a keybinding. For example, in
-  /// the keybinding `[Key::Cmd, Key::Shift, Key::A]`, `Key::A` is the
+  /// the keybinding `[Key::LWin, Key::Shift, Key::A]`, `Key::A` is the
   /// trigger key.
   keybinding_map: Arc<Mutex<HashMap<Key, Vec<Keybinding>>>>,
 
@@ -98,10 +89,12 @@ impl KeybindingListener {
       Arc::new(Mutex::new(Self::create_keybinding_map(keybindings)));
 
     let enabled = Arc::new(AtomicBool::new(true));
+    let swallow_win_up = Arc::new(AtomicBool::new(false));
 
     let keyboard_hook = Self::create_keyboard_hook(
       keybinding_map.clone(),
       enabled.clone(),
+      swallow_win_up.clone(),
       event_tx,
       dispatcher,
     )?;
@@ -145,12 +138,23 @@ impl KeybindingListener {
   fn create_keyboard_hook(
     keybinding_map: Arc<Mutex<HashMap<Key, Vec<Keybinding>>>>,
     enabled: Arc<AtomicBool>,
+    swallow_win_up: Arc<AtomicBool>,
     event_tx: mpsc::UnboundedSender<KeybindingEvent>,
     dispatcher: &Dispatcher,
   ) -> crate::Result<platform_impl::KeyboardHook> {
     platform_impl::KeyboardHook::new(
       move |event: platform_impl::KeyEvent| -> bool {
-        if !enabled.load(Ordering::Relaxed) || !event.is_keypress {
+        // Swallow the release of a Win key that was part of a matched
+        // keybinding. Otherwise, Windows opens the Start menu on the Win
+        // key release, since it never saw the (swallowed) keypresses.
+        //
+        // See: <https://github.com/glzr-io/glazewm/issues/1215>
+        if !event.is_keypress {
+          return WIN_KEYS.contains(&event.key)
+            && swallow_win_up.swap(false, Ordering::Relaxed);
+        }
+
+        if !enabled.load(Ordering::Relaxed) {
           return false;
         }
 
@@ -207,6 +211,16 @@ impl KeybindingListener {
 
         if has_extra_modifiers {
           return false;
+        }
+
+        // Arm the Win key release swallow if the keybinding uses the Win
+        // key.
+        if longest_keybinding
+          .keys()
+          .iter()
+          .any(|key| WIN_KEYS.contains(key))
+        {
+          swallow_win_up.store(true, Ordering::Relaxed);
         }
 
         let _ = event_tx.send(KeybindingEvent(longest_keybinding.clone()));

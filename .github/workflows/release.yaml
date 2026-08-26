@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Download installers
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           pattern: package-*
           merge-multiple: true
@@ -37,10 +37,9 @@ jobs:
           # Add a `v` prefix to the version number.
           VERSION: v${{ inputs.version_number }}
         run: |
-          mv installer-universal.exe "glazewm-$VERSION.exe"
-          mv installer-arm64.msi "standalone-glazewm-$VERSION-arm64.msi"
-          mv installer-x64.msi "standalone-glazewm-$VERSION-x64.msi"
-          mv installer-universal.dmg "glazewm-$VERSION.dmg"
+          mv installer-universal.exe "lonewm-$VERSION.exe"
+          mv installer-arm64.msi "standalone-lonewm-$VERSION-arm64.msi"
+          mv installer-x64.msi "standalone-lonewm-$VERSION-x64.msi"
 
       - name: Create draft release
         env:
@@ -52,7 +51,6 @@ jobs:
             --title "$VERSION" \
             --generate-notes \
             --draft \
-            "./glazewm-$VERSION.exe#$VERSION for Windows (standard)" \
-            "./standalone-glazewm-$VERSION-arm64.msi#$VERSION for Windows (standalone, arm64)" \
-            "./standalone-glazewm-$VERSION-x64.msi#$VERSION for Windows (standalone, x64)" \
-            "./glazewm-$VERSION.dmg#$VERSION for macOS"
+            "./lonewm-$VERSION.exe#$VERSION for Windows (standard)" \
+            "./standalone-lonewm-$VERSION-arm64.msi#$VERSION for Windows (standalone, arm64)" \
+            "./standalone-lonewm-$VERSION-x64.msi#$VERSION for Windows (standalone, x64)"

@@ -12,15 +12,12 @@ use tray_icon::{
   menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
   Icon, TrayIcon, TrayIconBuilder,
 };
-#[cfg(target_os = "windows")]
-use wm_platform::DispatcherExtWindows;
-use wm_platform::{Dispatcher, ThreadBound};
+use wm_platform::{Dispatcher, DispatcherExtWindows, ThreadBound};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum TrayMenuId {
   ReloadConfig,
   ShowConfigFolder,
-  #[cfg(target_os = "windows")]
   ToggleWindowAnimations,
   RunOnStartup,
   Exit,
@@ -31,7 +28,6 @@ impl Display for TrayMenuId {
     match self {
       TrayMenuId::ReloadConfig => write!(f, "reload_config"),
       TrayMenuId::ShowConfigFolder => write!(f, "show_config_folder"),
-      #[cfg(target_os = "windows")]
       TrayMenuId::ToggleWindowAnimations => {
         write!(f, "toggle_window_animations")
       }
@@ -48,7 +44,6 @@ impl FromStr for TrayMenuId {
     match event {
       "show_config_folder" => Ok(Self::ShowConfigFolder),
       "reload_config" => Ok(Self::ReloadConfig),
-      #[cfg(target_os = "windows")]
       "toggle_window_animations" => Ok(Self::ToggleWindowAnimations),
       "run_on_startup" => Ok(Self::RunOnStartup),
       "exit" => Ok(Self::Exit),
@@ -73,16 +68,9 @@ impl SystemTray {
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let (config_reload_tx, config_reload_rx) = mpsc::unbounded_channel();
 
-    let animations_enabled = Arc::new(Mutex::new({
-      #[cfg(target_os = "windows")]
-      {
-        dispatcher.window_animations_enabled().unwrap_or(false)
-      }
-      #[cfg(not(target_os = "windows"))]
-      {
-        false
-      }
-    }));
+    let animations_enabled = Arc::new(Mutex::new(
+      dispatcher.window_animations_enabled().unwrap_or(false),
+    ));
 
     let run_on_startup_enabled = Arc::new(Mutex::new(
       auto_launch_instance()
@@ -133,7 +121,6 @@ impl SystemTray {
 
   fn create_tray_icon(
     // LINT: `animations_enabled` is only used on Windows.
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     animations_enabled: bool,
     run_on_startup_enabled: bool,
   ) -> anyhow::Result<TrayIcon> {
@@ -151,7 +138,6 @@ impl SystemTray {
       None,
     );
 
-    #[cfg(target_os = "windows")]
     let toggle_animations_item = CheckMenuItem::with_id(
       TrayMenuId::ToggleWindowAnimations,
       "Window animations",
@@ -175,7 +161,6 @@ impl SystemTray {
     tray_menu.append_items(&[
       &reload_config_item,
       &config_dir_item,
-      #[cfg(target_os = "windows")]
       &toggle_animations_item,
       &run_on_startup_item,
       &PredefinedMenuItem::separator(),
@@ -188,7 +173,7 @@ impl SystemTray {
 
     let tray_icon = TrayIconBuilder::new()
       .with_menu(Box::new(tray_menu))
-      .with_tooltip(format!("GlazeWM v{}", env!("VERSION_NUMBER")))
+      .with_tooltip(format!("LoneWM v{}", env!("VERSION_NUMBER")))
       .with_icon(icon)
       .build()?;
 
@@ -220,7 +205,6 @@ impl SystemTray {
     config_reload_tx: &mpsc::UnboundedSender<()>,
     exit_tx: &mpsc::UnboundedSender<()>,
     // LINT: `animations_enabled` is only used on Windows.
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     animations_enabled: &Arc<Mutex<bool>>,
     run_on_startup_enabled: &Arc<Mutex<bool>>,
   ) -> anyhow::Result<()> {
@@ -228,18 +212,9 @@ impl SystemTray {
 
     match menu_id {
       TrayMenuId::ShowConfigFolder => {
-        dispatcher.open_file_explorer({
-          #[cfg(target_os = "windows")]
-          {
-            config_path.parent().context("Invalid config path.")?
-          }
-          #[cfg(target_os = "macos")]
-          {
-            // On macOS, pass the file path directly since Finder
-            // navigates one level too high with the parent directory.
-            config_path
-          }
-        })?;
+        dispatcher.open_file_explorer(
+          config_path.parent().context("Invalid config path.")?,
+        )?;
 
         Ok(())
       }
@@ -247,7 +222,6 @@ impl SystemTray {
         config_reload_tx.send(())?;
         Ok(())
       }
-      #[cfg(target_os = "windows")]
       TrayMenuId::ToggleWindowAnimations => {
         let mut animations_enabled = animations_enabled.lock().unwrap();
         dispatcher.set_window_animations_enabled(!*animations_enabled)?;
@@ -281,11 +255,7 @@ fn auto_launch_instance() -> anyhow::Result<AutoLaunch> {
   let exe_path = std::env::current_exe()?.to_string_lossy().to_string();
   let args: [&str; 0] = [];
 
-  #[cfg(target_os = "windows")]
-  let instance = AutoLaunch::new("GlazeWM", &exe_path, &args);
-
-  #[cfg(target_os = "macos")]
-  let instance = AutoLaunch::new("GlazeWM", &exe_path, false, &args);
+  let instance = AutoLaunch::new("LoneWM", &exe_path, &args);
 
   Ok(instance)
 }

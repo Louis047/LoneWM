@@ -1,4 +1,7 @@
-use std::sync::OnceLock;
+use std::{
+  collections::HashSet,
+  sync::{Arc, Mutex, OnceLock},
+};
 
 use tokio::sync::mpsc;
 use windows::Win32::{
@@ -22,6 +25,9 @@ use crate::{Dispatcher, WindowEvent, WindowId};
 thread_local! {
   /// Sender for window events. For use with hook procedure.
   static EVENT_TX: OnceLock<mpsc::UnboundedSender<WindowEvent>> = const { OnceLock::new() };
+
+  /// Managed window IDs. For use with hook procedure.
+  static MANAGED_WINDOW_IDS: OnceLock<Arc<Mutex<HashSet<WindowId>>>> = const { OnceLock::new() };
 }
 
 /// Platform-specific implementation of [`WindowEventNotification`].
@@ -37,6 +43,7 @@ pub(crate) struct WindowListener {
 impl WindowListener {
   /// Implements [`WindowListener::new`].
   pub(crate) fn new(
+    managed_window_ids: Arc<Mutex<HashSet<WindowId>>>,
     event_tx: mpsc::UnboundedSender<WindowEvent>,
     dispatcher: &Dispatcher,
   ) -> crate::Result<Self> {
@@ -46,6 +53,14 @@ impl WindowListener {
           "Window event sender already set.".to_string(),
         )
       })?;
+
+      MANAGED_WINDOW_IDS
+        .with(|lock| lock.set(managed_window_ids))
+        .map_err(|_| {
+          crate::Error::Platform(
+            "Managed window IDs already set.".to_string(),
+          )
+        })?;
 
       Self::hook_win_events()
     })??;
@@ -127,6 +142,25 @@ impl WindowListener {
       return;
     };
 
+    // Filter high-frequency events for windows that aren't managed by
+    // the WM. These events are of no interest for unmanaged windows, and
+    // forwarding them floods the event channel (e.g. location change
+    // events fire hundreds of times per second during drags and
+    // animations of other apps' windows).
+    if matches!(
+      event_type,
+      EVENT_OBJECT_LOCATIONCHANGE | EVENT_OBJECT_NAMECHANGE
+    ) && !MANAGED_WINDOW_IDS
+      .with(|lock| {
+        lock.get().and_then(|ids| {
+          ids.lock().ok().map(|ids| ids.contains(&WindowId(handle.0)))
+        })
+      })
+      .unwrap_or(false)
+    {
+      return;
+    }
+
     let notification = crate::WindowEventNotification(None);
 
     let event = match event_type {
@@ -179,9 +213,7 @@ impl WindowListener {
       _ => return,
     };
 
-    if let Err(err) = event_tx.send(event) {
-      tracing::warn!("Failed to send window event: {}.", err);
-    }
+    let _ = event_tx.send(event);
   }
 }
 
