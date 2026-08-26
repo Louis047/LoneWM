@@ -7,8 +7,8 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ActiveDrag, ContainerDto, DisplayState, GapsConfig, WindowDto,
-  WindowRuleConfig, WindowState,
+  ActiveDrag, ContainerDto, DisplayState, FullscreenMode, GapsConfig,
+  WindowDto, WindowRuleConfig, WindowState,
 };
 use wm_platform::{NativeWindow, Rect, RectDelta};
 
@@ -133,7 +133,6 @@ impl NonTilingWindow {
       #[allow(clippy::cast_possible_wrap, clippy::unnecessary_cast)]
       handle: self.native().id().0 as isize,
       title: self.native_properties().title,
-      #[cfg(target_os = "windows")]
       class_name: self.native_properties().class_name,
       process_name: self.native_properties().process_name,
       active_drag: self.active_drag(),
@@ -148,20 +147,20 @@ impl_window_getters!(NonTilingWindow);
 impl PositionGetters for NonTilingWindow {
   fn to_rect(&self) -> anyhow::Result<Rect> {
     match self.state() {
-      WindowState::Fullscreen(_) => {
-        let monitor = self.monitor().context("No monitor.")?;
-
-        #[cfg(target_os = "windows")]
-        {
+      WindowState::Fullscreen(config) => match config.effective_mode() {
+        FullscreenMode::Full => {
+          let monitor = self.monitor().context("No monitor.")?;
           monitor.to_rect()
         }
-        #[cfg(target_os = "macos")]
-        {
-          // On macOS, the public APIs only allow window placement within
-          // the display's working area.
-          Ok(monitor.native_properties().working_area)
+        FullscreenMode::Monocle => {
+          let workspace = self.workspace().context("No workspace.")?;
+          if config.respect_gaps {
+            workspace.to_rect()
+          } else {
+            workspace.max_workspace_rect()
+          }
         }
-      }
+      },
       _ => Ok(self.floating_placement()),
     }
   }

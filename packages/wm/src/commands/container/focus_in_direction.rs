@@ -15,13 +15,21 @@ pub fn focus_in_direction(
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   let focus_target = match origin_container {
-    Container::TilingWindow(_) => {
-      // If a suitable focus target isn't found in the current workspace,
-      // attempt to find a workspace in the given direction.
-      tiling_focus_target(origin_container, direction)?.map_or_else(
-        || workspace_focus_target(origin_container, direction, state),
-        |container| Ok(Some(container)),
-      )?
+    Container::TilingWindow(ref tiling_window) => {
+      match tiling_window.state() {
+        WindowState::Fullscreen(_) => {
+          workspace_focus_target(origin_container, direction, state)?
+        }
+        _ => {
+          // If a suitable focus target isn't found in the current
+          // workspace, attempt to find a workspace in the given
+          // direction.
+          tiling_focus_target(origin_container, direction)?.map_or_else(
+            || workspace_focus_target(origin_container, direction, state),
+            |container| Ok(Some(container)),
+          )?
+        }
+      }
     }
     Container::NonTilingWindow(ref non_tiling_window) => {
       match non_tiling_window.state() {
@@ -79,7 +87,7 @@ fn floating_focus_target(
 
 /// Gets a focus target within the current workspace. Traverse upwards from
 /// the origin container to find an adjacent container that can be focused.
-fn tiling_focus_target(
+pub(crate) fn tiling_focus_target(
   origin_container: &Container,
   direction: &Direction,
 ) -> anyhow::Result<Option<Container>> {

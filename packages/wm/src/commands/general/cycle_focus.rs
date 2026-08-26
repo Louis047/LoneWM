@@ -80,12 +80,7 @@ fn next_state(
 ) -> WindowState {
   match current_state {
     WindowState::Floating(_) => WindowState::Fullscreen(
-      config
-        .value
-        .window_behavior
-        .state_defaults
-        .fullscreen
-        .clone(),
+      config.value.window_behavior.state_defaults.fullscreen,
     ),
     WindowState::Fullscreen(_) => WindowState::Minimized,
     WindowState::Minimized => WindowState::Tiling,

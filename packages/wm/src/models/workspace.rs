@@ -80,7 +80,10 @@ impl Workspace {
   /// Uses `single_window_outer_gap` when the workspace has a single tiling
   /// window, otherwise falls back to `outer_gap`.
   pub fn outer_gaps(&self) -> RectDelta {
-    let is_single_window = self.tiling_children().nth(1).is_none();
+    let mut tiling_windows =
+      self.descendants().filter(Container::is_tiling_window);
+    let is_single_window =
+      tiling_windows.next().is_some() && tiling_windows.next().is_none();
 
     let gaps_config = &self.0.borrow().gaps_config;
     let gaps = if is_single_window {

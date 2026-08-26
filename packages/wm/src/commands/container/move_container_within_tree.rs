@@ -1,10 +1,7 @@
 use anyhow::Context;
 use wm_common::{VecDequeExt, WmEvent};
 
-use super::{
-  attach_container, detach_container, flatten_child_split_containers,
-  set_focused_descendant,
-};
+use super::{attach_container, detach_container, set_focused_descendant};
 use crate::{models::Container, traits::CommonGetters, wm_state::WmState};
 
 /// Move a container to a new location in the tree. This detaches the
@@ -26,10 +23,6 @@ pub fn move_container_within_tree(
   target_index: usize,
   state: &WmState,
 ) -> anyhow::Result<()> {
-  // Create iterator of parent, grandparent, and great-grandparent.
-  let ancestors =
-    container_to_move.ancestors().take(3).collect::<Vec<_>>();
-
   // Get lowest common ancestor (LCA) between `container_to_move` and
   // `target_parent`. This could be the `target_parent` itself.
   let lowest_common_ancestor =
@@ -118,13 +111,6 @@ pub fn move_container_within_tree(
     lowest_common_ancestor
       .borrow_child_focus_order_mut()
       .shift_to_index(original_focus_index, target_parent_ancestor.id());
-  }
-
-  // After moving the container, flatten any redundant split containers.
-  // For example, in the layout V[1 H[2]] where container 1 is moved down
-  // to become V[H[1 2]], this will then need to be flattened to V[1 2].
-  for ancestor in ancestors.iter().rev() {
-    flatten_child_split_containers(ancestor)?;
   }
 
   if container_to_move.has_focus(None) {

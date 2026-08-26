@@ -7,8 +7,8 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ActiveDrag, ContainerDto, DisplayState, GapsConfig, TilingDirection,
-  WindowDto, WindowRuleConfig, WindowState,
+  ActiveDrag, ContainerDto, DisplayState, FullscreenMode, GapsConfig,
+  TilingDirection, WindowDto, WindowRuleConfig, WindowState,
 };
 use wm_platform::{NativeWindow, Rect, RectDelta};
 
@@ -92,6 +92,23 @@ impl TilingWindow {
     state: WindowState,
     insertion_target: Option<InsertionTarget>,
   ) -> NonTilingWindow {
+    // Default the floating placement to the window's current tiling rect
+    // (in native frame coordinates). Otherwise, the window would be
+    // redrawn at its stale manage-time placement (e.g. the app's small
+    // default launch size) when transitioning to a non-tiling state.
+    //
+    // See: <https://github.com/glzr-io/glazewm/issues/1015>
+    let floating_placement = if self.has_custom_floating_placement() {
+      self.floating_placement()
+    } else {
+      self
+        .to_rect()
+        .and_then(|rect| {
+          Ok(rect.apply_delta(&self.total_border_delta()?, None))
+        })
+        .unwrap_or_else(|_| self.floating_placement())
+    };
+
     NonTilingWindow::new(
       Some(self.id()),
       self.native().clone(),
@@ -100,7 +117,7 @@ impl TilingWindow {
       Some(WindowState::Tiling),
       self.border_delta(),
       insertion_target,
-      self.floating_placement(),
+      floating_placement,
       self.has_custom_floating_placement(),
       self.done_window_rules(),
       self.active_drag(),
@@ -127,7 +144,6 @@ impl TilingWindow {
       #[allow(clippy::cast_possible_wrap, clippy::unnecessary_cast)]
       handle: self.native().id().0 as isize,
       title: self.native_properties().title,
-      #[cfg(target_os = "windows")]
       class_name: self.native_properties().class_name,
       process_name: self.native_properties().process_name,
       active_drag: self.active_drag(),
@@ -140,3 +156,29 @@ impl_common_getters!(TilingWindow);
 impl_tiling_size_getters!(TilingWindow);
 impl_position_getters_as_resizable!(TilingWindow);
 impl_window_getters!(TilingWindow);
+
+impl PositionGetters for TilingWindow {
+  fn to_tiling_rect(&self) -> anyhow::Result<Rect> {
+    self.calculate_tiling_rect()
+  }
+
+  fn to_rect(&self) -> anyhow::Result<Rect> {
+    match self.state() {
+      WindowState::Fullscreen(config) => match config.effective_mode() {
+        FullscreenMode::Full => {
+          let monitor = self.monitor().context("No monitor.")?;
+          monitor.to_rect()
+        }
+        FullscreenMode::Monocle => {
+          let workspace = self.workspace().context("No workspace.")?;
+          if config.respect_gaps {
+            workspace.to_rect()
+          } else {
+            workspace.max_workspace_rect()
+          }
+        }
+      },
+      _ => self.calculate_tiling_rect(),
+    }
+  }
+}

@@ -84,3 +84,13 @@ impl_common_getters!(SplitContainer);
 impl_tiling_size_getters!(SplitContainer);
 impl_tiling_direction_getters!(SplitContainer);
 impl_position_getters_as_resizable!(SplitContainer);
+
+impl PositionGetters for SplitContainer {
+  fn to_rect(&self) -> anyhow::Result<Rect> {
+    self.calculate_tiling_rect()
+  }
+
+  fn to_tiling_rect(&self) -> anyhow::Result<Rect> {
+    self.calculate_tiling_rect()
+  }
+}

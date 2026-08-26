@@ -6,18 +6,18 @@ use tracing::Level;
 use uuid::Uuid;
 use wm_platform::{Delta, Direction, LengthValue, OpacityValue};
 
-use crate::TilingDirection;
+use crate::{FullscreenMode, TilingDirection};
 
 const VERSION: &str = env!("VERSION_NUMBER");
 
 #[derive(Clone, Debug, Parser)]
-#[clap(name = "glazewm", author, version = VERSION, about, long_about = None)]
+#[clap(name = "lonewm", author, version = VERSION, about, long_about = None)]
 pub enum AppCommand {
   /// Starts the window manager.
   Start {
     /// Custom path to user config file.
     ///
-    /// The default path is `%userprofile%/.glzr/glazewm/config.yaml`
+    /// The default path is `%userprofile%/.lonewm/config.yaml`
     #[clap(short = 'c', long = "config", value_hint = clap::ValueHint::FilePath)]
     config_path: Option<PathBuf>,
 
@@ -195,6 +195,12 @@ pub enum InvokeCommand {
     #[clap(long, default_missing_value = "true", require_equals = true, num_args = 0..=1)]
     shown_on_top: Option<bool>,
 
+    /// Fullscreen mode: `full` (Mode 0, covers entire screen) or
+    /// `monocle` (Mode 1, fills workspace).
+    #[clap(short, long, value_enum)]
+    mode: Option<FullscreenMode>,
+
+    /// Deprecated legacy alias for `--mode monocle`.
     #[clap(long, default_missing_value = "true", require_equals = true, num_args = 0..=1)]
     maximized: Option<bool>,
   },
@@ -225,6 +231,12 @@ pub enum InvokeCommand {
     #[clap(long, default_missing_value = "true", require_equals = true, num_args = 0..=1)]
     shown_on_top: Option<bool>,
 
+    /// Fullscreen mode: `full` (Mode 0, covers entire screen) or
+    /// `monocle` (Mode 1, fills workspace).
+    #[clap(short, long, value_enum)]
+    mode: Option<FullscreenMode>,
+
+    /// Deprecated legacy alias for `--mode monocle`.
     #[clap(long, default_missing_value = "true", require_equals = true, num_args = 0..=1)]
     maximized: Option<bool>,
   },
