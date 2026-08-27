@@ -41,8 +41,6 @@ impl UserConfig {
 
     let config_path = config_path
       .or_else(|| env::var("LONEWM_CONFIG_PATH").ok().map(PathBuf::from))
-      // Legacy GlazeWM env var, kept for migrating users.
-      .or_else(|| env::var("GLAZEWM_CONFIG_PATH").ok().map(PathBuf::from))
       .unwrap_or(default_config_path);
 
     let (config_value, config_str) = Self::read(&config_path)?;
@@ -376,21 +374,11 @@ impl UserConfig {
   }
 }
 
-/// Gets the default config path: `%userprofile%/.lonewm/config.yaml`.
-///
-/// Falls back to the legacy `GlazeWM` path (`.glzr/glazewm/config.yaml`)
-/// when it exists and the `LoneWM` path does not, so migrating users keep
-/// their config.
+/// Gets the default config path:
+/// `%userprofile%/.lonewm/config.yaml`.
 fn default_config_path() -> anyhow::Result<PathBuf> {
   let home_dir =
     home::home_dir().context("Unable to get home directory.")?;
 
-  let lonewm_path = home_dir.join(".lonewm/config.yaml");
-  let legacy_path = home_dir.join(".glzr/glazewm/config.yaml");
-
-  if !lonewm_path.exists() && legacy_path.exists() {
-    return Ok(legacy_path);
-  }
-
-  Ok(lonewm_path)
+  Ok(home_dir.join(".lonewm/config.yaml"))
 }

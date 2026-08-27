@@ -5,6 +5,7 @@ use crate::{BindingModeConfig, ContainerDto, TilingDirection, WmEvent};
 
 pub const DEFAULT_IPC_PORT: u32 = 6123;
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "messageType", rename_all = "snake_case")]
 pub enum ServerMessage {

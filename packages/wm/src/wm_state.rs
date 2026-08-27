@@ -1,6 +1,6 @@
 use std::{
   collections::{HashMap, HashSet},
-  sync::{atomic::AtomicU64, Arc, Mutex},
+  sync::{Arc, Mutex},
   time::Instant,
 };
 
@@ -113,22 +113,15 @@ pub struct WmState {
   /// signed installer build).
   pub can_manage_elevated: bool,
 
-  /// Last border color stamped per window handle, with a generation
-  /// counter.
+  /// Last corner style stamped per window handle.
   ///
-  /// Used to skip redundant `DWMWA_BORDER_COLOR` re-stamps (which force
-  /// DWM to re-evaluate the frame and visibly flicker) and to let the
-  /// delayed re-stamp task detect that a newer color has since been
-  /// applied, so a stale task cannot overwrite it.
-  pub border_stamp_cache: Arc<Mutex<HashMap<isize, BorderStamp>>>,
+  /// Used to skip redundant `DWMWA_WINDOW_CORNER_PREFERENCE` re-stamps
+  /// (which force DWM to re-evaluate the frame and visibly flicker).
+  pub corner_stamp_cache:
+    Arc<Mutex<HashMap<isize, wm_platform::CornerStyle>>>,
 
   /// Whether the initial state has been populated.
   has_initialized: bool,
-
-  /// Monotonic counter incremented on every focus transition to prevent
-  /// stale delayed border re-stamp tasks from overwriting newer focus
-  /// state.
-  pub focus_generation: Arc<AtomicU64>,
 
   /// Sender for emitting WM-related events.
   event_tx: mpsc::UnboundedSender<WmEvent>,
@@ -158,8 +151,7 @@ impl WmState {
       managed_timestamps: HashMap::new(),
       is_focus_synced: false,
       can_manage_elevated: wm_platform::can_manage_elevated_windows(),
-      border_stamp_cache: Arc::new(Mutex::new(HashMap::new())),
-      focus_generation: Arc::new(AtomicU64::new(0)),
+      corner_stamp_cache: Arc::new(Mutex::new(HashMap::new())),
       windows_by_native_id: HashMap::new(),
       managed_window_ids: Arc::new(Mutex::new(HashSet::new())),
       has_initialized: false,
@@ -805,7 +797,7 @@ impl WmState {
       .managed_timestamps
       .retain(|id, _| managed_window_ids.contains(id));
 
-    // Prune border stamp cache entries for windows that are no longer
+    // Prune corner stamp cache entries for windows that are no longer
     // managed.
     let managed_handles = self
       .windows()
@@ -813,20 +805,12 @@ impl WmState {
       .map(|window| window.native().id().0);
     let managed_handles = managed_handles.collect::<Vec<_>>();
 
-    if let Ok(mut cache) = self.border_stamp_cache.lock() {
+    if let Ok(mut cache) = self.corner_stamp_cache.lock() {
       cache.retain(|handle, _| managed_handles.contains(handle));
     }
 
     Ok(())
   }
-}
-
-/// The last window effects applied to a window, used to skip
-/// redundant `DwmSetWindowAttribute` calls that cause flickering.
-#[derive(Clone, Debug)]
-pub struct BorderStamp {
-  pub color: Option<wm_platform::Color>,
-  pub corner_style: Option<wm_platform::CornerStyle>,
 }
 
 impl Drop for WmState {
@@ -856,27 +840,9 @@ impl Drop for WmState {
 
         let _ = window.native().set_taskbar_visibility(true);
 
-        // Only call `set_border_color` when the cached color differs
-        // from `None` — redundant DWM stamps flicker.
-        let handle = window.native().id().0;
-        let needs_reset = self
-          .border_stamp_cache
-          .lock()
-          .ok()
-          .and_then(|cache| cache.get(&handle).cloned())
-          .is_some_and(|stamp| stamp.color.is_some());
-
-        if needs_reset {
-          let _ = window.native().set_border_color(None);
-        }
-
         let _ = window
           .native()
           .set_transparency(&OpacityValue::from_alpha(u8::MAX));
-
-        if let Ok(mut cache) = self.border_stamp_cache.lock() {
-          cache.remove(&handle);
-        }
       }
     }
   }

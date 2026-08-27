@@ -1,4 +1,4 @@
-mod color;
+mod corner_radius;
 mod corner_style;
 mod delta;
 mod direction;
@@ -10,7 +10,7 @@ mod point;
 mod rect;
 mod rect_delta;
 
-pub use color::*;
+pub use corner_radius::*;
 pub use corner_style::*;
 pub use delta::*;
 pub use direction::*;

@@ -9,7 +9,7 @@ fn main() {
   // Set language to English (US).
   res.set_language(0x0409);
 
-  res.set("OriginalFilename", "lonewm.exe");
+  res.set("OriginalFilename", "lonewm-cli.exe");
   res.set("ProductName", "LoneWM CLI");
   res.set("FileDescription", "LoneWM CLI");
 

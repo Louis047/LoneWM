@@ -1,5 +1,52 @@
 # Worklog & upstream-issue knowledge base
 
+## Complete Removal of Window Border Support (2026-08-27)
+
+Completely removed all window border overlay support (DirectComposition & Direct2D engine, `borders:` configuration, `ignore-borders` command, and DirectX dependencies) to maintain a lightweight, zero-overhead core while preserving native DWM window corner rounding and sizing margins:
+- `wm-platform`: deleted `border_overlay.rs`, `platform_impl/windows/border_overlay.rs`, `platform_impl/windows/dcomp_renderer.rs`, `models/border_color.rs`, `models/border_effect.rs`, `models/border_overlay_config.rs`, `models/color.rs`. Removed unused Windows crate features (`Direct2D`, `Direct3D11`, `DirectComposition`, `Dxgi`, `Foundation_Numerics`).
+- `wm-common`: removed `borders: BordersConfig` from `ParsedConfig`, removed `InvokeCommand::IgnoreBorders`, cleaned up border tests.
+- `wm`: deleted `commands/window/ignore_borders.rs`, removed `border_overlays` and `border_ignored_windows` from `WmState`, removed overlay creation/destruction/repositioning from `manage_window`, `unmanage_window`, `ignore_window`, `platform_sync`, `reload_config`, `toggle_pause`, and `wm.rs`.
+- `wm-watcher`: removed `destroy_orphaned_border_overlays()` call.
+- `resources/assets/sample-config.yaml` and docs: removed `borders:` configuration section and updated documentation.
+
+## DirectComposition Border Engine Overhaul + Legacy Cleanup (2026-08-26)
+
+Replaced the broken native DWM window border system (`DWMWA_BORDER_COLOR`) with
+a high-performance, hardware-accelerated DirectComposition + Direct2D overlay
+rendering engine ported from `tacky-borders`, and completed the removal of all
+legacy GlazeWM fallbacks.
+
+**Part A — Complete removal of legacy DWM border system:**
+- `wm-common/src/parsed_config.rs`: removed `BorderEffectConfig` and `WindowEffectConfig.border`.
+- `wm-platform/src/native_window.rs` (facade & impl): deleted `set_border_color` and `get_border_color`.
+- `wm/src/commands/general/platform_sync.rs`: deleted `apply_border_effect` and the 50ms async delayed re-stamp task.
+- `wm/src/wm_state.rs`: deleted `BorderStamp` and `focus_generation`. Migrated corner caching to `corner_stamp_cache: Arc<Mutex<HashMap<isize, CornerStyle>>>`.
+- `wm/src/commands/general/{toggle_pause,reload_config}.rs`: removed all DWM border resets and caches.
+- `wm/src/events/handle_window_focused.rs`: removed DWM border cache invalidations.
+- `wm-watcher/src/main.rs`: removed `set_border_color(None)` from crash recovery.
+- `resources/assets/sample-config.yaml`: removed deprecated `border:` sections from `window_effects`.
+
+**Part B — DirectComposition + Direct2D Overlay Engine (tacky-borders port):**
+- `wm-platform/Cargo.toml`: added Windows crate features for `Direct2D`, `Direct2D_Common`, `Direct3D`, `Direct3D11`, `DirectComposition`, `Dxgi`, `Dxgi_Common`, and `Foundation_Numerics`.
+- `wm-platform/src/models/`: added `BorderColor` (hex solid, accent keyword, linear gradients with direction, dark/light theme-aware variants), `BorderEffect` (glow, shadow), `CornerRadius` (`auto`, `square`, `round`, `small_round`, `px(N)`), and `BorderOverlayConfig`.
+- `wm-platform/src/platform_impl/windows/dcomp_renderer.rs`: process-global GPU device singleton owning D3D11, Direct2D 1, and DirectComposition desktop devices with theme/accent registry queries.
+- `wm-platform/src/platform_impl/windows/border_overlay.rs`: transparent layered popup HWND (`LoneWM_BorderOverlay`) with DirectComposition visual tree and Direct2D hardware-accelerated rendering.
+- `wm-platform/src/border_overlay.rs`: public facade exporting `BorderOverlay`, `BorderOverlayConfig`, and `destroy_orphaned_border_overlays()`.
+- `wm-common/src/parsed_config.rs`: added top-level `borders: BordersConfig` and unified `general.corner_radius: CornerRadius`.
+- `wm-common/src/app_command.rs`: added `InvokeCommand::IgnoreBorders` (`ignore-borders` CLI/window-rule command).
+- `wm/src/commands/window/ignore_borders.rs`: new command handler suppressing overlays per-window.
+- `wm/src/commands/window/{manage_window,unmanage_window,ignore_window}.rs`: overlay creation on manage and destruction on unmanage/ignore.
+- `wm/src/commands/general/platform_sync.rs`: overlay repositioning & z-order sync during container redraw, active/inactive color application on focus changes, unified general corner radius application.
+- `wm/src/commands/general/{toggle_pause,reload_config}.rs`: overlay visibility toggling on pause/unpause, config hot-reloading.
+- `wm-watcher/src/main.rs`: orphaned overlay cleanup on WM crash recovery.
+- `resources/assets/sample-config.yaml`: updated with `borders:` and `general.corner_radius`.
+
+**Part C — Complete Legacy GlazeWM Fallback Cleanup:**
+- `wm/src/user_config.rs`: removed `GLAZEWM_CONFIG_PATH` env var fallback and `~/.glzr/glazewm` directory fallback.
+- `wm/src/commands/general/shell_exec.rs`: fixed documentation paths from `.glaze-wm` to `.lonewm`.
+- `wm-cli/build.rs`: corrected `OriginalFilename` to `lonewm-cli.exe`.
+- `AGENTS.md` and `.brain/architecture.md`: updated documentation to reflect clean config paths.
+
 ## Cleanup + Dwindle Stabilization + Border Hardening (2026-08-26)
 
 Three-part change set (11 files), all gates green.

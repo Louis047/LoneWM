@@ -32,6 +32,14 @@ general:
   #   monitor.
   hide_method: 'cloak'
 
+  # Window corner radius preference.
+  # - 'auto': Use Windows DWM default (rounded on Win11, square on Win10).
+  # - 'square': Force square corners.
+  # - 'round': Force standard rounded corners.
+  # - 'small_round': Force small rounded corners.
+  # - <integer>: Custom pixel radius for window corners.
+  corner_radius: 'auto'
+
   # Affects which windows get shown in the native Windows taskbar. Has no
   # effect if `hide_method: 'hide'`.
   # - 'true': Show all windows (regardless of workspace).
@@ -55,23 +63,10 @@ gaps:
 window_effects:
   # Visual effects to apply to the focused window.
   focused_window:
-    # Highlight the window with a colored border.
-    # ** Exclusive to Windows 11 due to API limitations.
-    border:
-      enabled: true
-      color: '#8dbcff'
-
     # Remove the title bar from the window's frame. Note that this can
     # cause rendering issues for some applications.
     hide_title_bar:
       enabled: false
-
-    # Change the corner style of the window's frame.
-    # ** Exclusive to Windows 11 due to API limitations.
-    corner_style:
-      enabled: false
-      # Allowed values: 'square', 'rounded', 'small_rounded'.
-      style: 'square'
 
     # Change the transparency of the window.
     transparency:
@@ -82,14 +77,8 @@ window_effects:
 
   # Visual effects to apply to non-focused windows.
   other_windows:
-    border:
-      enabled: true
-      color: '#a1a1a1'
     hide_title_bar:
       enabled: false
-    corner_style:
-      enabled: false
-      style: 'square'
     transparency:
       enabled: false
       opacity: '0%'

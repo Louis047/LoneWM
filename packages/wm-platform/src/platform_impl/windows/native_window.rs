@@ -3,10 +3,9 @@ use windows::{
   Win32::{
     Foundation::{CloseHandle, BOOL, HANDLE, HWND, LPARAM, POINT, RECT},
     Graphics::Dwm::{
-      DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
-      DWMWA_CLOAKED, DWMWA_COLOR_DEFAULT, DWMWA_EXTENDED_FRAME_BOUNDS,
-      DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
-      DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
+      DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_CLOAKED,
+      DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_WINDOW_CORNER_PREFERENCE,
+      DWMWCP_DEFAULT, DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
     },
     Security::{
       GetTokenInformation, TokenElevation, TokenUIAccess, TOKEN_ELEVATION,
@@ -45,8 +44,8 @@ use windows::{
 
 use super::com::{IApplicationView, COM_INIT};
 use crate::{
-  Color, CornerStyle, Delta, Dispatcher, LengthValue, OpacityValue, Point,
-  Rect, RectDelta, WindowId, WindowZOrder,
+  CornerStyle, Delta, Dispatcher, LengthValue, OpacityValue, Point, Rect,
+  RectDelta, WindowId, WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -675,44 +674,6 @@ impl NativeWindow {
     }
 
     Ok(())
-  }
-
-  /// Implements [`NativeWindowWindowsExt::get_border_color`].
-  pub(crate) fn get_border_color(&self) -> crate::Result<u32> {
-    let mut color = 0u32;
-    unsafe {
-      #[allow(clippy::cast_possible_truncation)]
-      DwmGetWindowAttribute(
-        self.hwnd(),
-        DWMWA_BORDER_COLOR,
-        std::ptr::from_mut(&mut color).cast(),
-        std::mem::size_of::<u32>() as u32,
-      )?;
-    }
-
-    Ok(color)
-  }
-
-  /// Implements [`NativeWindowWindowsExt::set_border_color`].
-  pub(crate) fn set_border_color(
-    &self,
-    color: Option<&Color>,
-  ) -> crate::Result<()> {
-    let target_bgr = match color {
-      Some(color) => color.to_bgr(),
-      None => DWMWA_COLOR_DEFAULT,
-    };
-
-    unsafe {
-      #[allow(clippy::cast_possible_truncation)]
-      DwmSetWindowAttribute(
-        self.hwnd(),
-        DWMWA_BORDER_COLOR,
-        std::ptr::from_ref(&target_bgr).cast(),
-        std::mem::size_of::<u32>() as u32,
-      )
-      .map_err(Into::into)
-    }
   }
 
   /// Implements [`NativeWindowWindowsExt::set_corner_style`].

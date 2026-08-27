@@ -3148,6 +3148,7 @@ dependencies = [
  "clap",
  "regex",
  "serde",
+ "serde_json",
  "tracing",
  "uuid",
  "wm-platform",

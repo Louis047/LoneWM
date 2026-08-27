@@ -11,6 +11,7 @@
 
 [主要特性](#主要特性) •
 [安装](#安装) •
+[推荐搭配](#推荐搭配) •
 [从源码构建](#从源码构建) •
 [默认快捷键](#默认快捷键) •
 [配置说明](#配置说明) •
@@ -26,7 +27,7 @@
 - **Dwindle 螺旋布局：** 新窗口自动将当前聚焦的窗口按交替螺旋方式分割，支持 2D 空间即时交换。
 - **专注于 Windows 稳定性：** 修复了多项上游问题，涵盖窗口遮蔽（Cloaking）、UWP/Electron 挂起保留、多显示器睡眠唤醒重连、任务栏缩略图焦点处理以及全屏状态机转换。
 - **低延迟输入：** 独立的低延迟键盘钩子线程（基于 `GetAsyncKeyState`）、哈希索引原生窗口查找以及源端 `WinEvent` 过滤。
-- **Windows 11 视觉效果：** 原生彩色边框、亚克力/云母透明度、隐藏标题栏以及圆角控制。
+- **Windows 11 视觉效果：** 亚克力/云母透明度、隐藏标题栏以及圆角控制。
 - **Windows 原生架构：** 专为 Windows 打造，无跨平台抽象层开销。
 - **多显示器支持：** 工作区显示器绑定、显示拓扑变更自适应以及 DPI 缩放支持。
 - **WebSocket IPC：** 在 `127.0.0.1:6123` 上提供 JSON-over-WebSocket IPC 服务，便于脚本调用和第三方状态栏集成。
@@ -39,6 +40,23 @@
 
 * **安装程序 (`.exe`)：** 推荐使用，包含 UIAccess 权限以管理管理员权限（提权）运行的窗口。
 * **便携版 (`.zip`)：** 包含独立可执行文件 (`lonewm.exe`、`lonewm-cli.exe`、`lonewm-watcher.exe`)。
+
+---
+
+## 推荐搭配
+
+搭配 LoneWM 使用以获得最佳兼容性与体验的应用程序与系统调整：
+
+### 推荐应用
+
+- **[YASB](https://github.com/amnweb/yasb)：** 专为 Windows 打造的高可定制状态栏。
+- **[Tacky-Borders](https://github.com/luke-you/tacky-borders)：** 专为 Windows 打造的窗口边框管理工具。
+- **[Windhawk](https://github.com/ramensoftware/windhawk)：** Windows 桌面应用程序与任务栏的模块化定制平台。
+
+### Windows 设置
+
+- **关闭 Windows 原生窗口阴影**，并使用 `tacky-borders` 更精准地控制窗口阴影与边框。
+- **关闭 Windows 窗口动画**，以获得更干脆迅捷的平铺窗口管理体验。
 
 ---
 
@@ -199,29 +217,21 @@ workspaces:
 ```yaml
 window_effects:
   focused_window:
-    # 聚焦窗口的彩色边框
-    border:
-      enabled: true
-      color: "#8dbcff"
-
-    # 隐藏标题栏
+    # 移除窗口标题栏
     hide_title_bar:
       enabled: false
 
-    # 边角样式：'square'（直角）、'rounded'（圆角）、'small_rounded'（小圆角）
+    # 圆角样式：'square', 'rounded', 'small_rounded'
     corner_style:
       enabled: false
       style: "square"
 
-    # 窗口透明度：'0%' 到 '100%'（例如 '95%'）
+    # 窗口透明度：'0%' 到 '100%'（如 '95%'）
     transparency:
       enabled: false
       opacity: "95%"
 
   other_windows:
-    border:
-      enabled: true
-      color: "#a1a1a1"
     hide_title_bar:
       enabled: false
     corner_style:

@@ -14,7 +14,7 @@ commands build everything. All paths below are relative to `packages/`.
 | `wm-ipc-client` | lib | WebSocket client (`ws://127.0.0.1:6123`) used by CLI + watcher |
 | `wm-macros` | proc-macro | `#[derive(SubEnum)]`, `#[derive(EnumFromInner)]` |
 | `wm-platform` | lib | ALL Win32 access, behind a facade; `compile_error!` on non-Windows targets |
-| `wm-watcher` | bin `lonewm-watcher` | Crash-recovery sidecar: tracks managed handles via IPC, restores (uncloak/show/taskbar/border/transparency) if the WM dies |
+| `wm-watcher` | bin `lonewm-watcher` | Crash-recovery sidecar: tracks managed handles via IPC, restores (uncloak/show/taskbar/transparency) if the WM dies |
 
 ## Runtime topology
 
@@ -126,7 +126,7 @@ falls back to a minimized window) · `cleanup_invalid_windows` (invalid handles
 `PauseChanged`).
 
 `Drop for WmState`: final restore — redraw to intended rects, uncloak, show,
-taskbar, border, transparency reset. The watcher does the same on crash.
+taskbar, transparency reset. The watcher does the same on crash.
 
 ## Command surface
 
@@ -233,14 +233,13 @@ window animations, run-on-startup, exit.
 - `wm/src/traits/window_getters.rs` — `should_fullscreen`, `toggled_state`,
   fullscreen tolerances (`ENTER/KEEP_FULLSCREEN_TOLERANCE` = 2px)
 - `wm/src/user_config.rs` — config discovery (`--config` →
-  `LONEWM_CONFIG_PATH` (legacy `GLAZEWM_CONFIG_PATH`) → `~/.lonewm/config.yaml`,
-  legacy `~/.glzr/glazewm/config.yaml` fallback), default ignore/float
+  `LONEWM_CONFIG_PATH` → `~/.lonewm/config.yaml`), default ignore/float
   rules, `active_keybinding_configs`
 - `wm-platform/src/dispatcher.rs` + `platform_impl/windows/event_loop.rs` —
   threading core
 - `wm-platform/src/models/rect.rs` — rect math (`clamp`, `inset`,
   `contains_rect`, `translate_to_center`)
-- `wm-common/src/parsed_config.rs` — config schema
+- `wm-common/src/parsed_config.rs` — config schema (`general.corner_radius`, `gaps`, `window_effects`)
 - `wm-macros/src/lib.rs` — proc macros
 
 ## Gotchas (short list — more in conventions.md)
@@ -248,8 +247,7 @@ window animations, run-on-startup, exit.
 1. Non-tiling windows are always direct workspace children (enforced).
 2. `InsertionTarget` validity is time-sensitive (target workspace displayed).
 3. Magic timing windows: 100ms focus override, 1s launch grace, 500ms minimize
-   suppression, 50ms border re-apply, 10px drag threshold, 2px fullscreen
-   tolerance.
+   suppression, 10px drag threshold, 2px fullscreen tolerance.
 4. Pause is escape-proof: only `WmTogglePause` keybindings survive; cleanup
    force-unpauses for shutdown commands.
 5. Monitor identity is fuzzy: handle → device path → hardware id (only if

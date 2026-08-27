@@ -82,11 +82,6 @@ pub enum ParseError {
   )]
   Opacity(String),
 
-  #[error(
-    "Invalid color '{0}': must be of format '#RRGGBB' or '#RRGGBBAA'."
-  )]
-  Color(String),
-
   #[error("Invalid delta value: {0}")]
   Delta(String),
 

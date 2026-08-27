@@ -33,7 +33,7 @@ pub fn reload_config(
 
   update_container_gaps(state, config);
 
-  update_window_effects(&old_config, state, config)?;
+  update_window_effects(&old_config, state, config);
 
   // Reset window visibility when the hide method is changed away from
   // cloaking, since cloaked windows stay invisible until uncloaked.
@@ -168,69 +168,15 @@ fn update_container_gaps(state: &mut WmState, config: &UserConfig) {
 }
 
 fn update_window_effects(
-  old_config: &ParsedConfig,
+  _old_config: &ParsedConfig,
   state: &mut WmState,
-  config: &UserConfig,
-) -> anyhow::Result<()> {
-  let focused_container =
-    state.focused_container().context("No focused container.")?;
-
-  let window_effects = &config.value.window_effects;
-  let old_window_effects = &old_config.window_effects;
-
-  // Window border effects are left at system defaults if disabled in the
-  // config. However, when transitioning from colored borders to having
-  // them disabled, it's best to reset to the system defaults.
-  if !window_effects.focused_window.border.enabled
-    && old_window_effects.focused_window.border.enabled
-  {
-    if let Ok(window) = focused_container.as_window_container() {
-      let handle = window.native().id().0;
-      let needs_reset = state
-        .border_stamp_cache
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(&handle).cloned())
-        .is_some_and(|stamp| stamp.color.is_some());
-
-      if needs_reset {
-        _ = window.native().set_border_color(None);
-      }
-
-      if let Ok(mut cache) = state.border_stamp_cache.lock() {
-        cache.remove(&handle);
-      }
-    }
-  }
-
-  if !window_effects.other_windows.border.enabled
-    && old_window_effects.other_windows.border.enabled
-  {
-    let unfocused_windows = state
-      .windows()
-      .into_iter()
-      .filter(|window| window.id() != focused_container.id());
-
-    for window in unfocused_windows {
-      let handle = window.native().id().0;
-      let needs_reset = state
-        .border_stamp_cache
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(&handle).cloned())
-        .is_some_and(|stamp| stamp.color.is_some());
-
-      if needs_reset {
-        _ = window.native().set_border_color(None);
-      }
-
-      if let Ok(mut cache) = state.border_stamp_cache.lock() {
-        cache.remove(&handle);
-      }
-    }
+  _config: &UserConfig,
+) {
+  // Clear corner stamp cache so all corner styles are re-applied
+  // with the new config values.
+  if let Ok(mut cache) = state.corner_stamp_cache.lock() {
+    cache.clear();
   }
 
   state.pending_sync.queue_all_effects_update();
-
-  Ok(())
 }

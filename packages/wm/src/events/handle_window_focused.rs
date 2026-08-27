@@ -64,12 +64,6 @@ pub fn handle_window_focused(
       state.is_focus_synced = true;
       state.pending_sync.queue_workspace_to_reorder(workspace);
 
-      // Invalidate border stamp cache for this window so that after the
-      // app finishes processing its internal WM_NCACTIVATE / theme
-      // routine, LoneWM re-applies the border color cleanly.
-      if let Ok(mut cache) = state.border_stamp_cache.lock() {
-        cache.remove(&window.native().id().0);
-      }
       state.pending_sync.queue_focused_effect_update();
 
       return Ok(());
@@ -111,10 +105,6 @@ pub fn handle_window_focused(
       state,
       config,
     )?;
-
-    if let Ok(mut cache) = state.border_stamp_cache.lock() {
-      cache.remove(&window.native().id().0);
-    }
 
     state.is_focus_synced = true;
     state.pending_sync.queue_workspace_to_reorder(workspace);

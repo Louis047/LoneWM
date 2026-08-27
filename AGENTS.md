@@ -4,8 +4,8 @@ LoneWM is a fork of **GlazeWM** (`glzr-io/glazewm`): a tiling window manager
 inspired by i3wm, written in Rust — now **Windows-only** (all macOS/cross-
 platform support was removed; `wm-platform` compiles a `compile_error!` on any
 non-Windows target) and **rebranded to LoneWM** (binaries `lonewm`,
-`lonewm-cli`, `lonewm-watcher`; config at `~/.lonewm/config.yaml` with a
-legacy `~/.glzr/glazewm` fallback; env `LONEWM_CONFIG_PATH`, legacy `GLAZEWM_CONFIG_PATH` still honored). LoneWM is a **pure Dwindle
+`lonewm-cli`, `lonewm-watcher`; config at `~/.lonewm/config.yaml`; env
+`LONEWM_CONFIG_PATH`). LoneWM is a **pure Dwindle
 window manager** (new windows split the focused window in an alternating
 spiral with 2D spatial swapping) — see `.brain/worklog.md` before
 touching insertion logic. The fork's focus is **Windows stability** — see

@@ -6,7 +6,7 @@ use windows::Win32::{
 };
 
 use crate::{
-  platform_impl, Color, CornerStyle, Delta, OpacityValue, Rect, RectDelta,
+  platform_impl, CornerStyle, Delta, OpacityValue, Rect, RectDelta,
 };
 
 /// Unique identifier of a window.
@@ -204,20 +204,6 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()>;
 
-  /// Sets the color of the window's border.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_border_color(&self, color: Option<&Color>) -> crate::Result<()>;
-
-  /// Gets the color of the window's border as reported by DWM (BGR u32).
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn get_border_color(&self) -> crate::Result<u32>;
-
   /// Sets the corner style of the window.
   ///
   /// # Platform-specific
@@ -337,14 +323,6 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()> {
     self.inner.set_title_bar_visibility(visible)
-  }
-
-  fn set_border_color(&self, color: Option<&Color>) -> crate::Result<()> {
-    self.inner.set_border_color(color)
-  }
-
-  fn get_border_color(&self) -> crate::Result<u32> {
-    self.inner.get_border_color()
   }
 
   fn set_corner_style(

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use wm_platform::{
-  Color, CornerStyle, Key, Keybinding, LengthValue, OpacityValue,
+  CornerRadius, CornerStyle, Key, Keybinding, LengthValue, OpacityValue,
   RectDelta,
 };
 
@@ -72,6 +72,9 @@ pub struct GeneralConfig {
   /// Config for automatically moving the cursor.
   pub cursor_jump: CursorJumpConfig,
 
+  /// Window corner radius preference.
+  pub corner_radius: CornerRadius,
+
   /// Whether to automatically focus windows underneath the cursor.
   pub focus_follows_cursor: bool,
 
@@ -101,6 +104,7 @@ impl Default for GeneralConfig {
   fn default() -> Self {
     GeneralConfig {
       cursor_jump: CursorJumpConfig::default(),
+      corner_radius: CornerRadius::Auto,
       focus_follows_cursor: true,
       toggle_workspace_on_refocus: false,
       startup_commands: vec![],
@@ -263,9 +267,6 @@ pub struct WindowEffectsConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowEffectConfig {
-  /// Config for optionally applying a colored border.
-  pub border: BorderEffectConfig,
-
   /// Config for optionally hiding the title bar.
   pub hide_title_bar: HideTitleBarEffectConfig,
 
@@ -274,30 +275,6 @@ pub struct WindowEffectConfig {
 
   /// Config for optionally applying transparency.
   pub transparency: TransparencyEffectConfig,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default, rename_all(serialize = "camelCase"))]
-pub struct BorderEffectConfig {
-  /// Whether to enable the effect.
-  pub enabled: bool,
-
-  /// Color of the window border.
-  pub color: Color,
-}
-
-impl Default for BorderEffectConfig {
-  fn default() -> Self {
-    BorderEffectConfig {
-      enabled: false,
-      color: Color {
-        r: 140,
-        g: 190,
-        b: 255,
-        a: 255,
-      },
-    }
-  }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -532,5 +509,31 @@ mod tests {
       respect_gaps: true,
     };
     assert_eq!(legacy_maximized.effective_mode(), FullscreenMode::Monocle);
+  }
+
+  #[test]
+  fn test_general_config_corner_radius_default() {
+    let general = GeneralConfig::default();
+    assert_eq!(general.corner_radius, CornerRadius::Auto);
+  }
+
+  #[test]
+  fn test_corner_radius_deserialization() {
+    let auto: CornerRadius = serde_json::from_str(r#""auto""#).unwrap();
+    assert_eq!(auto, CornerRadius::Auto);
+
+    let square: CornerRadius =
+      serde_json::from_str(r#""square""#).unwrap();
+    assert_eq!(square, CornerRadius::Square);
+
+    let round: CornerRadius = serde_json::from_str(r#""round""#).unwrap();
+    assert_eq!(round, CornerRadius::Round);
+
+    let small_round: CornerRadius =
+      serde_json::from_str(r#""small_round""#).unwrap();
+    assert_eq!(small_round, CornerRadius::SmallRound);
+
+    let px: CornerRadius = serde_json::from_str("12").unwrap();
+    assert_eq!(px, CornerRadius::Px(12));
   }
 }

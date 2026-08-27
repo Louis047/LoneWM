@@ -1,5 +1,3 @@
-use std::{sync::atomic::Ordering, time::Duration};
-
 use anyhow::Context;
 use wm_common::{
   CursorJumpTrigger, DisplayState, FullscreenMode, HideCorner, HideMethod,
@@ -15,7 +13,7 @@ use crate::{
   models::{Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
-  wm_state::{BorderStamp, WmState},
+  wm_state::WmState,
 };
 
 pub fn platform_sync(
@@ -55,18 +53,15 @@ pub fn platform_sync(
       state.prev_effects_window = None;
     }
 
-    // Get windows that should have the unfocused border applied to them.
-    // For the sake of performance, we only update the border of the
-    // previously focused window. If the `reset_window_effects` flag is
-    // passed, the unfocused border is applied to all unfocused windows.
-    let unfocused_windows =
+    let unfocused_windows: Vec<_> =
       if state.pending_sync.needs_all_effects_update() {
         state.windows()
       } else {
         prev_effects_window.into_iter().collect()
       }
       .into_iter()
-      .filter(|window| window.id() != focused_container.id());
+      .filter(|window| window.id() != focused_container.id())
+      .collect();
 
     for window in unfocused_windows {
       apply_window_effects(&window, false, config, state);
@@ -621,92 +616,19 @@ fn apply_window_effects(
     &window_effects.other_windows
   };
 
-  // Skip if both focused + non-focused window effects are disabled.
-  if window_effects.focused_window.border.enabled
-    || window_effects.other_windows.border.enabled
-  {
-    apply_border_effect(window, effect_config, state);
-  }
-
   if window_effects.focused_window.hide_title_bar.enabled
     || window_effects.other_windows.hide_title_bar.enabled
   {
     apply_hide_title_bar_effect(window, effect_config);
   }
 
-  if window_effects.focused_window.corner_style.enabled
-    || window_effects.other_windows.corner_style.enabled
-  {
-    apply_corner_effect(window, effect_config, state);
-  }
+  apply_corner_effect(window, config, state);
 
   if window_effects.focused_window.transparency.enabled
     || window_effects.other_windows.transparency.enabled
   {
     apply_transparency_effect(window, effect_config);
   }
-
-  // Modern Windows apps (e.g. Windows Terminal, Chromium/Electron, WinUI
-  // 3) asynchronously process `WM_NCACTIVATE(TRUE)` on activation and
-  // call `DefWindowProc(WM_NCACTIVATE, TRUE)` or re-evaluate non-client
-  // frames, resetting `DWMWA_BORDER_COLOR` to default ~15-50ms after
-  // activation. Re-stamping the focused border after a 50ms delay
-  // ensures the custom border color persists after the application's
-  // activation routine finishes.
-  if is_focused && effect_config.border.enabled {
-    let native_window = window.native().clone();
-    let border_color = effect_config.border.color.clone();
-    let target_generation =
-      state.focus_generation.fetch_add(1, Ordering::SeqCst) + 1;
-    let focus_generation = state.focus_generation.clone();
-
-    tokio::spawn(async move {
-      tokio::time::sleep(Duration::from_millis(50)).await;
-
-      // Only re-stamp if this window is still the currently focused window
-      // and no newer focus transition has occurred in the meantime.
-      if focus_generation.load(Ordering::SeqCst) == target_generation {
-        _ = native_window.set_border_color(Some(&border_color));
-      }
-    });
-  }
-}
-
-fn apply_border_effect(
-  window: &WindowContainer,
-  effect_config: &WindowEffectConfig,
-  state: &WmState,
-) {
-  let border_color = if effect_config.border.enabled {
-    Some(&effect_config.border.color)
-  } else {
-    None
-  };
-
-  // Skip redundant border stamps: re-applying the same
-  // `DWMWA_BORDER_COLOR` forces DWM to re-evaluate the window frame,
-  // which visibly flickers (particularly in apps that co-manage their
-  // frame, like JetBrains IDEs and Chromium/Electron apps).
-  let handle = window.native().id().0;
-
-  if let Ok(mut cache) = state.border_stamp_cache.lock() {
-    if let Some(stamp) = cache.get_mut(&handle) {
-      if stamp.color == border_color.cloned() {
-        return;
-      }
-      stamp.color = border_color.cloned();
-    } else {
-      cache.insert(
-        handle,
-        BorderStamp {
-          color: border_color.cloned(),
-          corner_style: None,
-        },
-      );
-    }
-  }
-
-  _ = window.native().set_border_color(border_color);
 }
 
 fn apply_hide_title_bar_effect(
@@ -720,34 +642,32 @@ fn apply_hide_title_bar_effect(
 
 fn apply_corner_effect(
   window: &WindowContainer,
-  effect_config: &WindowEffectConfig,
+  config: &UserConfig,
   state: &WmState,
 ) {
-  let corner_style = if effect_config.corner_style.enabled {
-    effect_config.corner_style.style.clone()
-  } else {
-    CornerStyle::Default
+  let corner_style = match &config.value.general.corner_radius {
+    wm_platform::CornerRadius::Auto => CornerStyle::Default,
+    wm_platform::CornerRadius::Square => CornerStyle::Square,
+    wm_platform::CornerRadius::Round => CornerStyle::Rounded,
+    wm_platform::CornerRadius::SmallRound => CornerStyle::SmallRounded,
+    wm_platform::CornerRadius::Px(px) => {
+      if *px <= 4 {
+        CornerStyle::SmallRounded
+      } else {
+        CornerStyle::Rounded
+      }
+    }
   };
 
-  // Skip redundant corner style stamps (same cache pattern as
-  // borders).
+  // Skip redundant corner style stamps to avoid DWM frame
+  // re-evaluation flicker.
   let handle = window.native().id().0;
 
-  if let Ok(mut cache) = state.border_stamp_cache.lock() {
-    if let Some(stamp) = cache.get_mut(&handle) {
-      if stamp.corner_style.as_ref() == Some(&corner_style) {
-        return;
-      }
-      stamp.corner_style = Some(corner_style.clone());
-    } else {
-      cache.insert(
-        handle,
-        BorderStamp {
-          color: None,
-          corner_style: Some(corner_style.clone()),
-        },
-      );
+  if let Ok(mut cache) = state.corner_stamp_cache.lock() {
+    if cache.get(&handle) == Some(&corner_style) {
+      return;
     }
+    cache.insert(handle, corner_style.clone());
   }
 
   _ = window.native().set_corner_style(&corner_style);

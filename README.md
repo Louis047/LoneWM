@@ -11,6 +11,7 @@ A tiling window manager for Windows inspired by i3wm, bspwm, and Hyprland.
 
 [Features](#features) •
 [Installation](#installation) •
+[Recommendations](#recommendations) •
 [Building from Source](#building-from-source) •
 [Default Keybindings](#default-keybindings) •
 [Configuration](#configuration) •
@@ -26,7 +27,7 @@ A tiling window manager for Windows inspired by i3wm, bspwm, and Hyprland.
 - **Dwindle Layout:** New windows split the currently focused window in an alternating spiral with spatial 2D window swapping.
 - **Windows Stability:** Dedicated handling for cloaking, suspended UWP/Electron apps, multi-monitor sleep/wake events, taskbar focus handling, and fullscreen transitions.
 - **Input & Event Handling:** Low-latency keyboard hook thread with `GetAsyncKeyState`, hash-indexed window lookups, and source-side event filtering.
-- **Windows 11 Visual Effects:** Configurable window borders, acrylic/mica transparency, title bar toggle, and corner styling via DWM APIs.
+- **Windows 11 Visual Effects:** Acrylic/mica transparency, title bar toggle, and corner styling via DWM APIs.
 - **Multi-Monitor Support:** Per-monitor workspace pinning, display change auto-reconciliation, and per-monitor DPI scaling.
 - **IPC Server:** JSON-over-WebSocket IPC server on `127.0.0.1:6123` for scripting and third-party status bar integration.
 
@@ -38,6 +39,23 @@ A tiling window manager for Windows inspired by i3wm, bspwm, and Hyprland.
 
 * **Installer (`.exe`):** Recommended for full features. Includes UIAccess permissions to manage elevated/administrator windows.
 * **Portable (`.zip`):** Self-contained binaries (`lonewm.exe`, `lonewm-cli.exe`, `lonewm-watcher.exe`).
+
+---
+
+## Recommendations
+
+Apps and modifications to be used with LoneWM for full compatibility:
+
+### Companion Apps
+
+- **[YASB](https://github.com/amnweb/yasb):** A highly customizable status bar made for Windows.
+- **[Tacky-Borders](https://github.com/luke-you/tacky-borders):** A window border manager for Windows.
+- **[Windhawk](https://github.com/ramensoftware/windhawk):** The customization marketplace and mod manager for Windows desktop applications and taskbar.
+
+### Windows Settings
+
+- **Turn off shadows for Windows** and use `tacky-borders` to control the shadows much easier.
+- **Turn off Windows Animations** for a snappy window-manager experience.
 
 ---
 
@@ -196,11 +214,6 @@ Visual effects exclusive to Windows 11:
 ```yaml
 window_effects:
   focused_window:
-    # Colored border around focused window
-    border:
-      enabled: true
-      color: "#8dbcff"
-
     # Remove window title bar
     hide_title_bar:
       enabled: false
@@ -216,9 +229,6 @@ window_effects:
       opacity: "95%"
 
   other_windows:
-    border:
-      enabled: true
-      color: "#a1a1a1"
     hide_title_bar:
       enabled: false
     corner_style:

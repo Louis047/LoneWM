@@ -7,6 +7,7 @@ use crate::{
   TilingDirection,
 };
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
   tag = "eventType",
